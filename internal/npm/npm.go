@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -38,10 +39,13 @@ func Latest(ctx context.Context, pkg string) (string, error) {
 		return "", fmt.Errorf("npm registry returned %s for %s", res.Status, pkg)
 	}
 
+	// Cap the body: a compromised or MITM'd registry cannot inject anything (the
+	// version is validated before use), but an unbounded response should not be
+	// able to pressure memory. The metadata for one dist-tag is a few KB.
 	var body struct {
 		Version string `json:"version"`
 	}
-	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&body); err != nil {
 		return "", fmt.Errorf("failed to decode npm registry response: %w", err)
 	}
 	if body.Version == "" {

@@ -241,7 +241,17 @@ func (a *app) preflight(name string) ([]container.Mount, error) {
 	if err := a.checkWorkdir(); err != nil {
 		return nil, err
 	}
-	return a.mounts(name)
+
+	mounts, err := a.mounts(name)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range mounts {
+		if err := m.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	return mounts, nil
 }
 
 // mounts assembles the container's view of the host. Dirs are mounted at

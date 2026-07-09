@@ -26,6 +26,18 @@ func (m Mount) arg() string {
 	return s
 }
 
+// Validate rejects a mount the runtime's `-v` syntax cannot express. `-v` is
+// colon-delimited with no escape, so a `:` anywhere in the path produces a
+// spec the runtime mis-parses (it fails closed, but with an opaque error).
+func (m Mount) Validate() error {
+	for _, p := range []string{m.Source, m.Target} {
+		if strings.Contains(p, ":") {
+			return fmt.Errorf("mount path %q contains ':', which the container runtime cannot express in a -v flag", p)
+		}
+	}
+	return nil
+}
+
 // Identity is the host user the container runs as, so files written into
 // mounted repositories end up owned by the invoking user.
 type Identity struct {

@@ -107,3 +107,15 @@ func TestDetectUnknown(t *testing.T) {
 	_, err := container.Detect("lxc")
 	require.ErrorContains(t, err, "unknown runtime")
 }
+
+func TestMountValidate(t *testing.T) {
+	require.NoError(t, container.Mount{Source: "/home/u/repo", Target: "/home/u/repo"}.Validate())
+
+	// `-v` is colon-delimited with no escape; a path with ':' fails closed at
+	// the runtime with an opaque error, so ccc rejects it up front.
+	err := container.Mount{Source: "/home/u/a:b/repo", Target: "/home/u/a:b/repo"}.Validate()
+	require.ErrorContains(t, err, "contains ':'")
+
+	err = container.Mount{Source: "/ok", Target: "/home/u/x:y"}.Validate()
+	require.ErrorContains(t, err, "x:y")
+}
