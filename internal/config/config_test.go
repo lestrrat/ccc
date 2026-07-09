@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/lestrrat-go/ccc/internal/config"
@@ -94,6 +95,31 @@ func TestLoadToleratesMalformedGlobalPin(t *testing.T) {
 	cfg, err := config.Load(root)
 	require.NoError(t, err, "a malformed pin must not fail load")
 	require.Equal(t, "beta", cfg.Image.ClaudeVersion, "preserved verbatim for repair")
+}
+
+// Concurrent SetClaudeVersion (two `ccc pin` at once, a bootstrap racing a pin)
+// must never leave a corrupt config or a stray temp file: unique temps + rename.
+func TestConcurrentWritesStayValid(t *testing.T) {
+	root := t.TempDir()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = config.SetClaudeVersion(root, "2.1.205")
+		}()
+	}
+	wg.Wait()
+
+	cfg, err := config.Load(root)
+	require.NoError(t, err, "config must remain parseable")
+	require.Equal(t, "2.1.205", cfg.Image.ClaudeVersion)
+
+	entries, err := os.ReadDir(root)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "no temp file left behind")
+	require.Equal(t, config.FileName, entries[0].Name())
 }
 
 func TestSetClaudeVersion(t *testing.T) {

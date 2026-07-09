@@ -199,11 +199,14 @@ func readJSON(path string, v any) error {
 	return nil
 }
 
-// writeJSON writes v to path via a temp file, so a crash cannot leave a
-// truncated config behind.
+// writeJSON writes v to path atomically: a unique temp file, fsync'd, then
+// renamed over path. The temp name is unique (os.CreateTemp) so concurrent
+// writers cannot clobber each other's temp, and the fsync means a crash after
+// the rename cannot surface a truncated file.
 func writeJSON(path string, v any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("failed to create %s: %w", filepath.Dir(path), err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("failed to create %s: %w", dir, err)
 	}
 
 	b, err := json.MarshalIndent(v, "", "  ")
@@ -212,11 +215,30 @@ func writeJSON(path string, v any) error {
 	}
 	b = append(b, '\n')
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return fmt.Errorf("failed to write %s: %w", tmp, err)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp for %s: %w", path, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	tmpName := tmp.Name()
+	// On any failure past this point, do not leave the temp behind.
+	defer os.Remove(tmpName)
+
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to chmod %s: %w", tmpName, err)
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to write %s: %w", tmpName, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to sync %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("failed to replace %s: %w", path, err)
 	}
 	return nil
