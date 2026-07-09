@@ -161,11 +161,7 @@ func (s *Store) SetClaudeVersion(name string, version string) error {
 	if err := s.Materialize(name); err != nil {
 		return err
 	}
-	path := s.VersionPath(name)
-	if err := os.WriteFile(path, []byte(version+"\n"), 0o600); err != nil {
-		return fmt.Errorf("failed to write %s: %w", path, err)
-	}
-	return nil
+	return config.WriteAtomic(s.VersionPath(name), []byte(version+"\n"), 0o600)
 }
 
 // Config loads the profile's profile.json.

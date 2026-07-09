@@ -199,21 +199,25 @@ func readJSON(path string, v any) error {
 	return nil
 }
 
-// writeJSON writes v to path atomically: a unique temp file, fsync'd, then
-// renamed over path. The temp name is unique (os.CreateTemp) so concurrent
-// writers cannot clobber each other's temp, and the fsync means a crash after
-// the rename cannot surface a truncated file.
+// writeJSON marshals v and writes it to path via WriteAtomic.
 func writeJSON(path string, v any) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("failed to create %s: %w", dir, err)
-	}
-
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to encode %s: %w", path, err)
 	}
-	b = append(b, '\n')
+	return WriteAtomic(path, append(b, '\n'), 0o600)
+}
+
+// WriteAtomic writes b to path atomically: a unique temp file, fsync'd, then
+// renamed over path. The temp name is unique (os.CreateTemp) so concurrent
+// writers cannot clobber each other's temp, and the fsync means a crash after
+// the rename cannot surface a truncated file. Exported so every small state
+// file (the per-profile pin included) gets the same guarantee.
+func WriteAtomic(path string, b []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("failed to create %s: %w", dir, err)
+	}
 
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -223,7 +227,7 @@ func writeJSON(path string, v any) error {
 	// On any failure past this point, do not leave the temp behind.
 	defer os.Remove(tmpName)
 
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(perm); err != nil {
 		tmp.Close()
 		return fmt.Errorf("failed to chmod %s: %w", tmpName, err)
 	}
