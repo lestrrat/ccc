@@ -151,13 +151,24 @@ func TestResolveTarget(t *testing.T) {
 }
 
 func TestReservedWordsAreDispatchable(t *testing.T) {
-	for _, name := range []string{"profile", "upgrade", "doctor", "help", "version"} {
+	for _, name := range []string{"profile", "pin", "check", "help", "version"} {
 		require.Contains(t, reserved, name)
 	}
-	// Every reserved word is a claude argument that needs `--` to pass through,
-	// so ccc keeps the set minimal. `build` folded into `upgrade --no-cache`;
-	// `login` belongs to `claude auth`.
+
+	// Every reserved word is a claude argument that then needs `--` to pass
+	// through, so a collision with a Claude Code subcommand taxes the common
+	// case. This is the list as of 2.1.205; none of it may be reserved.
+	claudeSubcommands := []string{
+		"agents", "auth", "auto-mode", "doctor", "gateway", "install", "mcp",
+		"plugin", "plugins", "project", "setup-token", "ultrareview", "update",
+		"upgrade",
+	}
+	for _, name := range claudeSubcommands {
+		require.NotContains(t, reserved, name, "%q is a claude subcommand", name)
+	}
+
+	// Folded away rather than renamed: `build` into `pin --no-cache`, `login`
+	// into `claude auth login`.
 	require.NotContains(t, reserved, "build")
 	require.NotContains(t, reserved, "login")
-	require.NotContains(t, reserved, "auth")
 }

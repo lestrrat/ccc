@@ -84,7 +84,7 @@ func (s *Store) ClaudeVersion(name string) (string, error) {
 		return "", nil
 	}
 	if err := config.ValidateClaudeVersion(v); err != nil {
-		return "", fmt.Errorf("%s: %w\nrepair it with `ccc -p %s upgrade` or delete the file", path, err, name)
+		return "", fmt.Errorf("%s: %w\nrepair it with `ccc -p %s pin` or delete the file", path, err, name)
 	}
 	return v, nil
 }

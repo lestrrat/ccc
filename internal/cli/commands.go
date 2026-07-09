@@ -11,20 +11,20 @@ import (
 	"github.com/lestrrat-go/ccc/internal/profile"
 )
 
-// cmdUpgrade pins a Claude Code version and rebuilds. Because CLAUDE_VERSION is
+// cmdPin pins a Claude Code version and rebuilds. Because CLAUDE_VERSION is
 // declared as the last ARG in the Dockerfile, only the final layer is
 // invalidated: this costs one npm install, not a full image rebuild.
 //
 // Without --profile the pin is global; with it, the pin lives in that profile's
 // profile.json, so profiles can run different Claude Code versions.
-func cmdUpgrade(a *app, args []string) error {
+func cmdPin(a *app, args []string) error {
 	var to string
 	var noCache bool
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--to":
 			if i+1 >= len(args) {
-				return fmt.Errorf("upgrade: --to needs a version")
+				return fmt.Errorf("pin: --to needs a version")
 			}
 			to = args[i+1]
 			i++
@@ -33,7 +33,7 @@ func cmdUpgrade(a *app, args []string) error {
 		case args[i] == "--no-cache":
 			noCache = true
 		default:
-			return fmt.Errorf("upgrade: unexpected argument %q", args[i])
+			return fmt.Errorf("pin: unexpected argument %q", args[i])
 		}
 	}
 
@@ -58,7 +58,7 @@ func cmdUpgrade(a *app, args []string) error {
 	// it explicitly means "pin it here", so that a later global change does not
 	// silently move this profile.
 	//
-	// A corrupt pin is tolerated here, and only here: `ccc upgrade` must be able
+	// A corrupt pin is tolerated here, and only here: `ccc pin` must be able
 	// to repair one. Everywhere else it is a hard error.
 	current, err := a.pinnedAt(scope)
 	if err != nil {
@@ -236,75 +236,5 @@ func profileRemove(a *app, args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "removed profile %s\n", name)
-	return nil
-}
-
-func cmdDoctor(a *app, _ []string) error {
-	fmt.Printf("config root:  %s\n", a.cfg.Root)
-	fmt.Printf("identity:     %s (uid=%d gid=%d)\n", a.id.User, a.id.UID, a.id.GID)
-	// The resolved dirs, not the configured ones: the repository this directory
-	// belongs to, plus whatever config.json and .ccc.json add.
-	fmt.Printf("mount dirs:   %s\n", strings.Join(a.dirs(), ", "))
-
-	home := "not mounted"
-	if a.cfg.Mounts.Home != config.HomeNone {
-		home = a.id.Home + " (" + a.cfg.Mounts.Home + ")"
-	}
-	fmt.Printf("home:         %s\n", home)
-
-	cache := "ephemeral"
-	if a.cfg.Mounts.Cache {
-		cache = "profile-owned"
-	}
-	fmt.Printf("cache:        %s\n", cache)
-
-	rt, err := a.runtime()
-	if err != nil {
-		fmt.Printf("runtime:      ERROR %s\n", err)
-		return err
-	}
-	fmt.Printf("runtime:      %s (%s)\n", rt.Name(), rt.Bin())
-
-	b, err := a.builder(rt, a.globals.profile)
-	if err != nil {
-		return err
-	}
-	tag, err := b.Tag()
-	if err != nil {
-		return err
-	}
-	status := "not built — will build on first run"
-	if b.Exists(tag) {
-		status = "present"
-	}
-	fmt.Printf("image:        %s (%s)\n", tag, status)
-
-	pinned, err := a.claudeVersion(a.globals.profile)
-	if err != nil {
-		return err
-	}
-	if pinned == "" {
-		pinned = config.DefaultClaudeVersion + " (unpinned; `ccc upgrade` to pin)"
-	}
-	fmt.Printf("claude:       %s\n", pinned)
-
-	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-		fmt.Printf("ssh agent:    %s\n", sock)
-	} else {
-		fmt.Printf("ssh agent:    not running (git over ssh may need a key in ~/.ssh)\n")
-	}
-
-	names, err := a.store.List()
-	if err != nil {
-		return err
-	}
-	fmt.Printf("profiles:     %s\n", strings.Join(names, ", "))
-
-	res, err := a.store.Resolve(a.globals.profile, a.cfg, a.cwd)
-	if err != nil {
-		fmt.Printf("resolved:     none — %s\n", err)
-		return nil
-	}
-	fmt.Printf("resolved:     %s\n", res)
 	return nil
 }

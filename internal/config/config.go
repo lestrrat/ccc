@@ -40,7 +40,7 @@ type Image struct {
 
 	// ClaudeVersion pins the Claude Code npm version. Empty means "latest",
 	// resolved once at build time and never revisited: ccc does not check the
-	// registry on a normal run. `ccc upgrade` records a concrete version here,
+	// registry on a normal run. `ccc pin` records a concrete version here,
 	// which changes the image tag and triggers a one-layer rebuild.
 	ClaudeVersion string `json:"claude_version,omitempty"`
 }
@@ -307,7 +307,7 @@ func Create(root string, name string) (bool, error) {
 
 // SetClaudeVersion records image.claude_version in config.json, preserving
 // every other setting. Unlike Create, this is an explicit user action
-// (`ccc upgrade`), so an existing config is updated rather than left alone.
+// (`ccc pin`), so an existing config is updated rather than left alone.
 func SetClaudeVersion(root string, version string) error {
 	if err := ValidateClaudeVersion(version); err != nil {
 		return err

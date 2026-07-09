@@ -113,18 +113,22 @@ ccc --resume                           # claude --resume
 ccc -p work --resume                   # profile "work"
 ccc --help                             # ccc's help
 ccc -- --help                          # claude's help
-ccc -- doctor                          # `claude doctor`, not `ccc doctor`
+ccc doctor                             # `claude doctor` — ccc no longer reserves it
 ```
 
-`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `profile`, `upgrade`, `doctor`, `help`, `version`, `--help`, `-h`, `--profile`, `-p`, `--runtime`.
+`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `profile`, `pin`, `check`, `help`, `version`, `--help`, `-h`, `--profile`, `-p`, `--runtime`.
+
+None of those is a Claude Code subcommand, so `ccc doctor`, `ccc update`, `ccc install`, and `ccc mcp` all reach claude without `--`. Earlier names `doctor` and `upgrade` collided with `claude doctor` and `claude update|upgrade`; they were renamed for that reason.
 
 Other commands:
 
 ```sh
-ccc upgrade              # pin the latest Claude Code, rebuild one layer
-ccc doctor               # runtime, image, mounts, resolved profile
+ccc pin                  # pin the latest Claude Code, rebuild one layer
+ccc check                # verify a session would start; non-zero if not
 ccc help                 # same as ccc --help
 ```
+
+`ccc check` runs the same preflight `ccc` runs — working directory, mount sources, profile, pin — and then **actually starts a container** with the real mounts and identity. That last step is the only thing that catches a malformed argument vector; a wrong flag order fails at `podman run` and nowhere else.
 
 There is no `build` command: the image builds itself on first run, and whenever the pin or `Dockerfile.extra` changes.
 
@@ -157,7 +161,14 @@ By default, the repository the working directory belongs to — which is not the
 
 The second is what makes **worktrees** work. A worktree's `.git` is a *file* containing `gitdir: <main-repo>/.git/worktrees/<name>`. Mount only the worktree and the container gets a dangling gitdir, so every `git` command fails.
 
-Outside a git repository, it is just the working directory.
+Outside a git repository, it is just the working directory — unless that is `/`, your home directory, or a parent of it. ccc refuses to mount those implicitly:
+
+```
+FAIL  mounts   refusing to mount your home directory /home/u implicitly
+run ccc inside a git repository, or name directories in mounts.dirs
+```
+
+Naming such a directory in `mounts.dirs` is your call; falling into it by running `ccc` from the wrong place is not.
 
 The working directory must live under a mounted directory. ccc refuses to run otherwise rather than silently mounting it.
 
@@ -361,31 +372,31 @@ ccc: could not build Claude Code 9.9.9 (exit status 1)
 ccc: staying on 2.1.205
 ```
 
-Your session starts anyway, on the version that works, and the pin is untouched. Were the pin written first, the container could brick ccc: every later run would fail on an image that can never build. `ccc upgrade --to <bad>` behaves the same way — it fails without recording anything.
+Your session starts anyway, on the version that works, and the pin is untouched. Were the pin written first, the container could brick ccc: every later run would fail on an image that can never build. `ccc pin --to <bad>` behaves the same way — it fails without recording anything.
 
-If a pin file is corrupted anyway, `ccc` refuses to run and says how to fix it. `ccc upgrade` is the one command that tolerates an unreadable pin, so it can always repair one:
+If a pin file is corrupted anyway, `ccc` refuses to run and says how to fix it. `ccc pin` is the one command that tolerates an unreadable pin, so it can always repair one:
 
 ```sh
-ccc -p work upgrade          # overwrites the corrupt pin
+ccc -p work pin              # overwrites the corrupt pin
 ```
 
 To drive it by hand:
 
 ```sh
-ccc upgrade                  # resolve the latest version, pin it, rebuild
-ccc upgrade --to 2.1.204     # pin a specific version
-ccc -p work upgrade          # pin just the "work" profile
+ccc pin                      # resolve the latest version, pin it, rebuild
+ccc pin --to 2.1.204         # pin a specific version
+ccc -p work pin              # pin just the "work" profile
 ```
 
 The version is an explicit pin. `CLAUDE_VERSION` is the last `ARG` in the Dockerfile, immediately before the only `RUN` that uses it, so bumping it invalidates **one layer**: apt, the Go toolchain, and `golangci-lint` above it are reused. And because the image tag content-hashes the build args, a changed pin is a changed tag — the next plain `ccc` rebuilds on its own.
 
-`ccc` never contacts the npm registry on a normal run; only `ccc upgrade` does. A pin is always a concrete version: `ccc upgrade --to latest` resolves `latest` through the registry before storing it, because a moving dist-tag would hash to a stable image tag and freeze the image forever.
+`ccc` never contacts the npm registry on a normal run; only `ccc pin` does. A pin is always a concrete version: `ccc pin --to latest` resolves `latest` through the registry before storing it, because a moving dist-tag would hash to a stable image tag and freeze the image forever.
 
 The pin only invalidates the last layer, so it can never refresh the parts that float: the `node:22-bookworm` base, apt packages, and `golangci-lint@latest`. For those:
 
 ```sh
-ccc upgrade --no-cache               # latest Claude Code + rebuild every layer
-ccc upgrade --no-cache --to 2.1.205  # keep this version, rebuild every layer
+ccc pin --no-cache                   # latest Claude Code + rebuild every layer
+ccc pin --no-cache --to 2.1.205      # keep this version, rebuild every layer
 ```
 
 #### Where the pin lives

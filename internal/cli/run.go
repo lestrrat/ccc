@@ -159,15 +159,10 @@ func (a *app) exec(res profile.Resolution, cmd []string) error {
 		return err
 	}
 
-	// Validate everything cheap before the image build: a first run that spends
-	// minutes building only to reject the working directory is hostile.
-	if err := a.checkWorkdir(); err != nil {
-		return err
-	}
 	if err := a.store.Materialize(res.Name); err != nil {
 		return err
 	}
-	mounts, err := a.mounts(res.Name)
+	mounts, err := a.preflight(res.Name)
 	if err != nil {
 		return err
 	}
@@ -200,7 +195,28 @@ func (a *app) exec(res profile.Resolution, cmd []string) error {
 	return syscall.Exec(argv[0], argv, os.Environ())
 }
 
-// mounts assembles the container's view of the host. Roots are mounted at
+// preflight validates everything cheap before the image build: a first run that
+// spends minutes building only to reject the working directory is hostile.
+//
+// `ccc check` calls this exact function. A diagnostic that reimplements the
+// checks drifts away from the code it claims to check, and then reports green
+// while the real path fails.
+func (a *app) preflight(name string) ([]container.Mount, error) {
+	// The implicit workspace dir is the cwd when it is not in a repository.
+	// Refuse the dangerous ones before anything else looks at them.
+	for _, d := range workspace.Dirs(a.cwd) {
+		if err := a.checkImplicitDir(d); err != nil {
+			return nil, fmt.Errorf("%w\nrun ccc inside a git repository, or name directories in mounts.dirs in %s/%s",
+				err, a.cfg.Root, config.FileName)
+		}
+	}
+	if err := a.checkWorkdir(); err != nil {
+		return nil, err
+	}
+	return a.mounts(name)
+}
+
+// mounts assembles the container's view of the host. Dirs are mounted at
 // their identical absolute paths; the profile is layered on top of $HOME.
 //
 // Mounts are applied parent-first, so a deeper mount always wins: read-write
@@ -325,6 +341,25 @@ func (a *app) ghConfig(name string) (string, error) {
 		return "", fmt.Errorf("failed to stat gh config %s: %w", dir, err)
 	}
 	return dir, nil
+}
+
+// checkImplicitDir refuses to mount a directory that was never named.
+//
+// Outside a git repository the implicit workspace dir is the cwd itself. Run
+// `ccc` from $HOME and that would mount the whole home read-write — the exact
+// exposure the narrow default exists to prevent, arrived at by accident.
+// Naming such a directory in mounts.dirs is fine; falling into it is not.
+func (a *app) checkImplicitDir(dir string) error {
+	switch {
+	case dir == "/":
+		return fmt.Errorf("refusing to mount / implicitly")
+	case dir == a.id.Home:
+		return fmt.Errorf("refusing to mount your home directory %s implicitly", dir)
+	case underRoot(a.id.Home, dir):
+		return fmt.Errorf("refusing to mount %s implicitly: it contains your home directory", dir)
+	default:
+		return nil
+	}
 }
 
 // dirs are the read-write host directories for this session.

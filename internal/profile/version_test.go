@@ -84,7 +84,7 @@ func TestClaudeVersionErrorSuggestsRepair(t *testing.T) {
 	require.NoError(t, os.WriteFile(s.VersionPath("work"), []byte("2.1.205; rm -rf /"), 0o600))
 
 	_, err := s.ClaudeVersion("work")
-	require.ErrorContains(t, err, "ccc -p work upgrade")
+	require.ErrorContains(t, err, "ccc -p work pin")
 	require.ErrorContains(t, err, "delete the file")
 }
 
@@ -113,9 +113,9 @@ func TestClaudeVersionAcceptsValid(t *testing.T) {
 }
 
 // "latest" stays *readable* — a hand-written pin file may contain it, and the
-// unpinned build arg defaults to it. But `ccc upgrade` must never STORE it:
+// unpinned build arg defaults to it. But `ccc pin` must never STORE it:
 // the image tag hashes the build args, so a "latest" pin hashes to a stable
-// tag and the image would never be rebuilt again. cmdUpgrade resolves it to a
+// tag and the image would never be rebuilt again. cmdPin resolves it to a
 // concrete version first; see TestUpgradeResolvesLatest.
 func TestClaudeVersionLatestIsReadableButNotAPin(t *testing.T) {
 	s, _ := newStore(t, "work")

@@ -22,10 +22,17 @@ var Version = "dev"
 
 // reserved first-arguments. Everything else is passed to `claude`; `--` forces
 // passthrough when a claude argument would collide with one of these.
+// Names are chosen NOT to collide with Claude Code's own subcommands, which as
+// of 2.1.205 are: agents auth auto-mode doctor gateway install mcp plugin
+// plugins project setup-token ultrareview update upgrade.
+//
+// Each reserved word is a claude argument that then needs `--` to pass through,
+// so a collision taxes the common case. `doctor` and `upgrade` both collided;
+// they are `check` and `pin`.
 var reserved = map[string]func(*app, []string) error{
 	"profile": cmdProfile,
-	"upgrade": cmdUpgrade,
-	"doctor":  cmdDoctor,
+	"pin":     cmdPin,
+	"check":   cmdCheck,
 	"help":    cmdHelp,
 	"version": cmdVersion,
 }
@@ -223,12 +230,12 @@ commands:
     --from <dir>             seed it from an existing ~/.claude
   profile list               list profiles ('*' marks default_profile)
   profile rm <name>          delete a profile and its credentials
-  upgrade                    pin the latest Claude Code, rebuild one layer
+  pin                        pin the latest Claude Code, rebuild one layer
     --to <version>           pin a specific version instead ("latest"
                              resolves to a concrete version before storing)
     --no-cache               also rebuild every layer (base image, apt,
                              golangci-lint) — the pin alone cannot refresh them
-  doctor                     check runtime, image, mounts, profile
+  check                      verify a session would start; exits non-zero if not
   version                    print version
   help                       print this help
 
@@ -247,7 +254,7 @@ examples:
   ccc --resume               start Claude Code with --resume
   ccc -p work --resume       ... as the "work" profile
   ccc -- --help              claude's help, not ccc's
-  ccc -- doctor              ` + "`claude doctor`" + `, not ` + "`ccc doctor`" + `
+  ccc doctor                 ` + "`claude doctor`" + ` — not reserved by ccc
 
 Command names above are reserved: they are consumed by ccc, not passed to
 claude. Use -- to force passthrough when a claude argument collides.
