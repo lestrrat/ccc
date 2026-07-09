@@ -84,6 +84,55 @@ func TestRelativeDirsRejected(t *testing.T) {
 	require.ErrorContains(t, err, "must be absolute or start with ~/")
 }
 
+func TestSetClaudeVersion(t *testing.T) {
+	t.Run("sets image.claude_version and preserves known keys", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, filepath.Join(root, config.FileName),
+			`{"runtime":"docker","image":{"extra_dockerfile":"Dockerfile.extra"}}`)
+
+		require.NoError(t, config.SetClaudeVersion(root, "2.1.205"))
+
+		cfg, err := config.Load(root)
+		require.NoError(t, err)
+		require.Equal(t, "2.1.205", cfg.Image.ClaudeVersion)
+		require.Equal(t, "docker", cfg.Runtime)
+		require.Contains(t, cfg.Image.ExtraDockerfile, "Dockerfile.extra", "sibling image key kept")
+	})
+
+	// A key ccc does not model must survive the write, not be dropped by a
+	// struct round-trip.
+	t.Run("preserves unknown keys", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, filepath.Join(root, config.FileName),
+			`{"future_toplevel":42,"image":{"future_image_key":"keep me"}}`)
+
+		require.NoError(t, config.SetClaudeVersion(root, "2.1.205"))
+
+		b, err := os.ReadFile(filepath.Join(root, config.FileName))
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(b, &raw))
+
+		require.EqualValues(t, 42, raw["future_toplevel"])
+		image := raw["image"].(map[string]any)
+		require.Equal(t, "keep me", image["future_image_key"])
+		require.Equal(t, "2.1.205", image["claude_version"])
+	})
+
+	t.Run("creates the file when absent", func(t *testing.T) {
+		root := t.TempDir()
+		require.NoError(t, config.SetClaudeVersion(root, "2.1.205"))
+
+		cfg, err := config.Load(root)
+		require.NoError(t, err)
+		require.Equal(t, "2.1.205", cfg.Image.ClaudeVersion)
+	})
+
+	t.Run("rejects a prerelease", func(t *testing.T) {
+		require.ErrorContains(t, config.SetClaudeVersion(t.TempDir(), "2.1.205-beta"), "no prereleases")
+	})
+}
+
 func TestLoadInvalidJSON(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, config.FileName), `{"runtime":`)

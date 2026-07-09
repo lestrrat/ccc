@@ -314,21 +314,30 @@ func Create(root string, name string) (bool, error) {
 // SetClaudeVersion records image.claude_version in config.json, preserving
 // every other setting. Unlike Create, this is an explicit user action
 // (`ccc pin`), so an existing config is updated rather than left alone.
+//
+// The file is merged as a raw map, not round-tripped through Config: a key ccc
+// does not model (a newer option, a typo worth keeping) must survive the write.
+// Decoding into a struct and re-marshalling would silently drop it. This also
+// avoids freezing in the derived values Load() materializes.
 func SetClaudeVersion(root string, version string) error {
 	if err := ValidateClaudeVersion(version); err != nil {
 		return err
 	}
 	path := filepath.Join(root, FileName)
 
-	// Read raw rather than reusing a loaded Config: applyDefaults() materializes
-	// derived values (mount roots, gh_config) that must not be frozen into the
-	// file as if the user had written them.
-	var raw Config
-	if err := readJSON(path, &raw); err != nil {
+	doc := map[string]any{}
+	if err := readJSON(path, &doc); err != nil {
 		return err
 	}
-	raw.Image.ClaudeVersion = version
-	return writeJSON(path, &raw)
+
+	image, _ := doc["image"].(map[string]any)
+	if image == nil {
+		image = map[string]any{}
+	}
+	image["claude_version"] = version
+	doc["image"] = image
+
+	return writeJSON(path, doc)
 }
 
 // LoadProfile reads profiles/<name>/profile.json. A missing file yields a
