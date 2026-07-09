@@ -45,44 +45,25 @@ func cmdUpgrade(a *app, args []string) error {
 		return fmt.Errorf("%q: %w", scope, profile.ErrNotExist)
 	}
 
-	if to == "" {
-		fmt.Fprintf(os.Stderr, "ccc: resolving latest %s from the npm registry\n", npm.ClaudeCode)
-		latest, err := npm.Latest(context.Background(), npm.ClaudeCode)
-		if err != nil {
-			return err
-		}
-		to = latest
-	}
-	if err := config.ValidateClaudeVersion(to); err != nil {
+	to, err := resolveTarget(to, func() (string, error) {
+		fmt.Fprintf(os.Stderr, "ccc: resolving %s@%s from the npm registry\n", npm.ClaudeCode, config.DefaultClaudeVersion)
+		return npm.Latest(context.Background(), npm.ClaudeCode)
+	})
+	if err != nil {
 		return err
 	}
 
-	current, err := a.claudeVersion(scope)
+	// Compare against the pin stored AT THIS SCOPE, not the effective one. A
+	// profile that merely inherits the global version is still unpinned: naming
+	// it explicitly means "pin it here", so that a later global change does not
+	// silently move this profile.
+	current, err := a.pinnedAt(scope)
 	if err != nil {
 		return err
 	}
 	rt, err := a.runtime()
 	if err != nil {
 		return err
-	}
-
-	// Already pinned there AND the image exists: nothing to do. A matching pin
-	// with no image still needs the build, and --no-cache always rebuilds —
-	// that is the only way to refresh the base image, apt, and golangci-lint,
-	// none of which the version pin can invalidate.
-	if current == to && !noCache {
-		b, err := a.builder(rt, scope)
-		if err != nil {
-			return err
-		}
-		tag, err := b.Tag()
-		if err != nil {
-			return err
-		}
-		if b.Exists(tag) {
-			fmt.Fprintf(os.Stderr, "ccc: already on %s\n", to)
-			return nil
-		}
 	}
 
 	if err := a.pin(scope, to); err != nil {
@@ -96,6 +77,18 @@ func cmdUpgrade(a *app, args []string) error {
 	tag, err := b.Tag()
 	if err != nil {
 		return err
+	}
+
+	// The tag hashes the pin, so an existing image already has this version.
+	// --no-cache still rebuilds: it is the only way to refresh the base image,
+	// apt, and golangci-lint, none of which the version pin can invalidate.
+	if !noCache && b.Exists(tag) {
+		if current == to {
+			fmt.Fprintf(os.Stderr, "ccc: already on %s\n", to)
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "ccc: pinned %s (image already built)\n", to)
+		return nil
 	}
 	if err := b.Build(tag, noCache); err != nil {
 		return err
@@ -111,6 +104,39 @@ func cmdUpgrade(a *app, args []string) error {
 		fmt.Fprintf(os.Stderr, "ccc: upgraded Claude Code %s -> %s %s\n", current, to, where)
 	}
 	return nil
+}
+
+// resolveTarget turns the requested version into a concrete one to store.
+//
+// A stored pin must never be "latest": the image tag hashes the build args, so
+// a moving dist-tag hashes to a stable tag and the image would never be rebuilt
+// again — the pin would silently freeze whatever was installed first. Both an
+// empty --to and an explicit `--to latest` therefore resolve through the
+// registry, which is the one place a network call is expected.
+func resolveTarget(to string, latest func() (string, error)) (string, error) {
+	if to == "" || to == config.DefaultClaudeVersion {
+		v, err := latest()
+		if err != nil {
+			return "", err
+		}
+		to = v
+	}
+	if err := config.ValidateClaudeVersion(to); err != nil {
+		return "", err
+	}
+	if to == config.DefaultClaudeVersion {
+		return "", fmt.Errorf("registry resolved to %q, not a concrete version", to)
+	}
+	return to, nil
+}
+
+// pinnedAt returns the version recorded at exactly this scope, without falling
+// back to the global pin. "" means nothing is pinned there.
+func (a *app) pinnedAt(scope string) (string, error) {
+	if scope == "" {
+		return a.cfg.Image.ClaudeVersion, nil
+	}
+	return a.store.ClaudeVersion(scope)
 }
 
 // pin records the version globally, or in a profile when scope is non-empty.

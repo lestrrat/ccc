@@ -211,7 +211,8 @@ commands:
   profile list               list profiles ('*' marks default_profile)
   profile rm <name>          delete a profile and its credentials
   upgrade                    pin the latest Claude Code, rebuild one layer
-    --to <version>           pin a specific version instead
+    --to <version>           pin a specific version instead ("latest"
+                             resolves to a concrete version before storing)
     --no-cache               also rebuild every layer (base image, apt,
                              golangci-lint) — the pin alone cannot refresh them
   doctor                     check runtime, image, mounts, profile

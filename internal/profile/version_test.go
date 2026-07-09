@@ -100,3 +100,17 @@ func TestClaudeVersionAcceptsValid(t *testing.T) {
 		})
 	}
 }
+
+// "latest" stays *readable* — a hand-written pin file may contain it, and the
+// unpinned build arg defaults to it. But `ccc upgrade` must never STORE it:
+// the image tag hashes the build args, so a "latest" pin hashes to a stable
+// tag and the image would never be rebuilt again. cmdUpgrade resolves it to a
+// concrete version first; see TestUpgradeResolvesLatest.
+func TestClaudeVersionLatestIsReadableButNotAPin(t *testing.T) {
+	s, _ := newStore(t, "work")
+	require.NoError(t, s.SetClaudeVersion("work", "latest"))
+
+	v, err := s.ClaudeVersion("work")
+	require.NoError(t, err)
+	require.Equal(t, "latest", v, "readable, so a hand-written file still works")
+}
