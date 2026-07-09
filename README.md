@@ -236,17 +236,60 @@ ccc shadows that path with a shim (`~/.config/ccc/shim/claude`) that execs the i
 
 ### Upgrading Claude Code
 
+It upgrades itself. You do not normally run anything.
+
+Inside the container, Claude Code is installed under root-owned `/usr/local` while the container runs as you, so its self-update always fails — and records what it wanted in `~/.claude/.last-update-result.json`, which is the profile's own mounted directory:
+
+```json
+{"path":"npm-global","outcome":"failed","status":"no_permissions",
+ "version_from":"2.1.204","version_to":"2.1.205"}
+```
+
+On the next `ccc`, that `version_to` becomes the profile's pin and one image layer rebuilds:
+
+```
+ccc: Claude Code asked for 2.1.205 (have 2.1.204); rebuilding
+```
+
+The container says what it wants; only the host can act on it. That permission failure is load-bearing twice over — it is also what stops the container from rewriting your host's installation through the mounted `$HOME`.
+
+ccc contacts no registry to do this. Claude Code already did the checking, so **its** `autoUpdates` setting is the on/off switch: set `"autoUpdates": false` in the profile's `settings.json` and nothing is ever asked for, so nothing is ever adopted. You are always one session behind — the session that discovers a release is the one whose update fails.
+
+Only a strictly newer version is adopted, because `ccc profile create --from ~/.claude` copies the host's update record, which may name an older version than the profile is pinned to.
+
+#### When the version is bad
+
+`version_to` comes from a file the container can write, so ccc assumes it may be wrong or hostile.
+
+A **malformed** value (`2.1.205; rm -rf /`, `$(id)`, unparseable JSON) is ignored. It never reaches a build arg.
+
+A **well-formed but nonexistent** version — say `9.9.9` — is subtler: it passes validation, but npm cannot install it. So ccc builds *before* it pins, and keeps the working image when the build fails:
+
+```
+ccc: Claude Code asked for 9.9.9 (have 2.1.205); rebuilding
+ccc: could not build Claude Code 9.9.9 (exit status 1)
+ccc: staying on 2.1.205
+```
+
+Your session starts anyway, on the version that works, and the pin is untouched. Were the pin written first, the container could brick ccc: every later run would fail on an image that can never build. `ccc upgrade --to <bad>` behaves the same way — it fails without recording anything.
+
+If a pin file is corrupted anyway, `ccc` refuses to run and says how to fix it. `ccc upgrade` is the one command that tolerates an unreadable pin, so it can always repair one:
+
+```sh
+ccc -p work upgrade          # overwrites the corrupt pin
+```
+
+To drive it by hand:
+
 ```sh
 ccc upgrade                  # resolve the latest version, pin it, rebuild
 ccc upgrade --to 2.1.204     # pin a specific version
 ccc -p work upgrade          # pin just the "work" profile
 ```
 
-Claude Code auto-updates itself on the host, but not inside ccc: the image installs it under root-owned `/usr/local`, and the container runs as you, so the updater cannot write there. That failure is load-bearing — it is what stops the container from rewriting your host installation through the mounted `$HOME`.
+The version is an explicit pin. `CLAUDE_VERSION` is the last `ARG` in the Dockerfile, immediately before the only `RUN` that uses it, so bumping it invalidates **one layer**: apt, the Go toolchain, and `golangci-lint` above it are reused. And because the image tag content-hashes the build args, a changed pin is a changed tag — the next plain `ccc` rebuilds on its own.
 
-Instead, the version is an explicit pin. `CLAUDE_VERSION` is the last `ARG` in the Dockerfile, immediately before the only `RUN` that uses it, so bumping it invalidates **one layer**: apt, the Go toolchain, and `golangci-lint` above it are reused. And because the image tag content-hashes the build args, a changed pin is a changed tag — the next plain `ccc` rebuilds on its own.
-
-`ccc` never contacts the npm registry on a normal run. Only `ccc upgrade` does. An unpinned profile installs `latest` once, at first build, and then stays there forever until you upgrade: pinned means pinned.
+`ccc` never contacts the npm registry on a normal run; only `ccc upgrade` does. A pin is always a concrete version: `ccc upgrade --to latest` resolves `latest` through the registry before storing it, because a moving dist-tag would hash to a stable image tag and freeze the image forever.
 
 The pin only invalidates the last layer, so it can never refresh the parts that float: the `node:22-bookworm` base, apt packages, and `golangci-lint@latest`. For those:
 

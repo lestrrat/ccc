@@ -85,6 +85,71 @@ func (a *app) bootstrap() (profile.Resolution, error) {
 	return profile.Resolution{Name: name, Source: profile.SourceBootstrap}, nil
 }
 
+// pendingClaudeUpgrade reports the version the container's Claude Code tried and
+// failed to install last session, and the version in force now.
+//
+// It does NOT persist anything: `version_to` is written by a process inside the
+// container, and a well-formed but nonexistent version (say "9.9.9") passes
+// validation yet cannot be installed. Persisting before the build succeeds
+// would let the container brick ccc — every later run would fail on a pin that
+// can never build. Adopt only after the image exists.
+//
+// ccc contacts no registry here: Claude Code already did the checking, and its
+// own `autoUpdates` setting is therefore the on/off switch. Disable it in the
+// profile's settings.json and there is nothing to adopt.
+//
+// Only a strictly newer version is offered. `ccc profile create --from
+// ~/.claude` copies the host's update record, which may name a version older
+// than this profile is pinned to; following that would be a silent downgrade.
+func (a *app) pendingClaudeUpgrade(name string) (string, string, error) {
+	current, err := a.claudeVersion(name)
+	if err != nil {
+		return "", "", err
+	}
+
+	want, err := a.store.RequestedClaudeVersion(name)
+	if err != nil || want == "" {
+		return "", current, err
+	}
+	if !config.IsNewerClaudeVersion(want, current) {
+		return "", current, nil
+	}
+	return want, current, nil
+}
+
+// ensureImage builds the image for the version Claude Code asked for, falling
+// back to the version already in force when that build fails.
+//
+// A failed upgrade must never block the session: the requested version may
+// simply not exist. Warn, keep the working image, carry on.
+func (a *app) ensureImage(rt container.Runtime, name string, want string, current string) (string, error) {
+	if want == "" {
+		b := a.builderWith(rt, current)
+		return b.Ensure()
+	}
+
+	fmt.Fprintf(os.Stderr, "ccc: Claude Code asked for %s (have %s); rebuilding\n", want, orLatest(current))
+	tag, err := a.builderWith(rt, want).Ensure()
+	if err == nil {
+		// Only now is the pin safe to record: the image for it exists.
+		if err := a.store.SetClaudeVersion(name, want); err != nil {
+			return "", err
+		}
+		return tag, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "ccc: could not build Claude Code %s (%s)\n", want, err)
+	fmt.Fprintf(os.Stderr, "ccc: staying on %s\n", orLatest(current))
+	return a.builderWith(rt, current).Ensure()
+}
+
+func orLatest(v string) string {
+	if v == "" {
+		return config.DefaultClaudeVersion
+	}
+	return v
+}
+
 // exec replaces the ccc process with the container runtime, so the TTY,
 // signals, and exit code pass through untouched.
 func (a *app) exec(res profile.Resolution, cmd []string) error {
@@ -108,11 +173,11 @@ func (a *app) exec(res profile.Resolution, cmd []string) error {
 
 	// The pin is per-profile, so the image tag is too. A changed pin is a
 	// changed tag, and Ensure() rebuilds — no version inspection needed.
-	b, err := a.builder(rt, res.Name)
+	want, current, err := a.pendingClaudeUpgrade(res.Name)
 	if err != nil {
 		return err
 	}
-	tag, err := b.Ensure()
+	tag, err := a.ensureImage(rt, res.Name, want, current)
 	if err != nil {
 		return err
 	}

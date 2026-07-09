@@ -183,7 +183,12 @@ func (a *app) builder(rt container.Runtime, name string) (*image.Builder, error)
 	if err != nil {
 		return nil, err
 	}
-	return image.NewBuilder(rt, a.cfg, a.id, v), nil
+	return a.builderWith(rt, v), nil
+}
+
+// builderWith constructs an image Builder for an explicit version.
+func (a *app) builderWith(rt container.Runtime, version string) *image.Builder {
+	return image.NewBuilder(rt, a.cfg, a.id, version)
 }
 
 func cmdVersion(_ *app, _ []string) error {

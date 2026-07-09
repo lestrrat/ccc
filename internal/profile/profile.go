@@ -8,6 +8,7 @@
 package profile
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -79,9 +80,66 @@ func (s *Store) ClaudeVersion(name string) (string, error) {
 		return "", nil
 	}
 	if err := config.ValidateClaudeVersion(v); err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+		return "", fmt.Errorf("%s: %w\nrepair it with `ccc -p %s upgrade` or delete the file", path, err, name)
 	}
 	return v, nil
+}
+
+// UpdateResultFile is where Claude Code records its last self-update attempt.
+// It lives inside the profile's claude/ directory, so it is per-profile.
+const UpdateResultFile = ".last-update-result.json"
+
+// updateResult is the subset of .last-update-result.json that ccc reads.
+type updateResult struct {
+	Outcome   string `json:"outcome"`
+	Status    string `json:"status"`
+	VersionTo string `json:"version_to"`
+}
+
+// UpdateResultPath is the profile's Claude Code update record.
+func (s *Store) UpdateResultPath(name string) string {
+	return filepath.Join(s.ClaudeDir(name), UpdateResultFile)
+}
+
+// RequestedClaudeVersion returns the version the container's Claude Code tried
+// to install and could not, or "" when there is nothing to act on.
+//
+// Inside the container Claude Code is installed under root-owned /usr/local, so
+// its self-update always fails with no_permissions — and records the version it
+// wanted in version_to. ccc reads that on the host and rebuilds. The container
+// says what it wants; only the host can act on it.
+//
+// This file is written by Claude Code, inside a directory mounted read-write
+// into the container. A malformed or hostile value is ignored rather than
+// fatal: it is not ccc's file, and a corrupt one must not brick every run.
+// Callers must still check IsNewerClaudeVersion before adopting the result —
+// seeding a profile with `--from ~/.claude` copies the host's record, which can
+// name an older version than the profile is pinned to.
+func (s *Store) RequestedClaudeVersion(name string) (string, error) {
+	path := s.UpdateResultPath(name)
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read %s: %w", path, err)
+	}
+
+	var r updateResult
+	if err := json.Unmarshal(b, &r); err != nil {
+		return "", nil // Claude Code's file, not ours: ignore what we cannot parse.
+	}
+	if r.VersionTo == "" {
+		return "", nil
+	}
+	if err := config.ValidateClaudeVersion(r.VersionTo); err != nil {
+		return "", nil
+	}
+	if r.VersionTo == config.DefaultClaudeVersion {
+		return "", nil // a dist-tag is not a pin
+	}
+	return r.VersionTo, nil
 }
 
 // SetClaudeVersion writes the profile's Claude Code pin.

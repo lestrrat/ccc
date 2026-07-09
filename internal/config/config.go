@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -72,6 +73,49 @@ type Profile struct {
 
 // claudeVersionRe matches npm's "latest" dist-tag or a plain semver.
 var claudeVersionRe = regexp.MustCompile(`^(latest|[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$`)
+
+// IsNewerClaudeVersion reports whether a is a strictly newer release than b.
+//
+// b == "" or "latest" means nothing concrete is pinned, so any concrete a is
+// newer. Prerelease suffixes are ignored for ordering: this only ever gates
+// "should we adopt the version Claude Code asked for", and the safe answer for
+// an unparseable input is no.
+func IsNewerClaudeVersion(a string, b string) bool {
+	av, ok := parseSemver(a)
+	if !ok {
+		return false
+	}
+	if b == "" || b == DefaultClaudeVersion {
+		return true
+	}
+	bv, ok := parseSemver(b)
+	if !ok {
+		return false
+	}
+	for i := range av {
+		if av[i] != bv[i] {
+			return av[i] > bv[i]
+		}
+	}
+	return false
+}
+
+func parseSemver(v string) ([3]int, bool) {
+	var out [3]int
+	base, _, _ := strings.Cut(v, "-")
+	parts := strings.Split(base, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
 
 // ValidateClaudeVersion rejects anything that is not a dist-tag or semver.
 //

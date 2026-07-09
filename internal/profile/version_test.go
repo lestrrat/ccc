@@ -77,6 +77,17 @@ func TestClaudeVersionRejectsInjection(t *testing.T) {
 	}
 }
 
+// A corrupt pin must name its own repair. The file is container-writable, so a
+// hard error with no way out would let the container brick ccc permanently.
+func TestClaudeVersionErrorSuggestsRepair(t *testing.T) {
+	s, _ := newStore(t, "work")
+	require.NoError(t, os.WriteFile(s.VersionPath("work"), []byte("2.1.205; rm -rf /"), 0o600))
+
+	_, err := s.ClaudeVersion("work")
+	require.ErrorContains(t, err, "ccc -p work upgrade")
+	require.ErrorContains(t, err, "delete the file")
+}
+
 func TestSetClaudeVersionRejectsInjection(t *testing.T) {
 	s, _ := newStore(t, "work")
 

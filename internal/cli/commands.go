@@ -57,23 +57,20 @@ func cmdUpgrade(a *app, args []string) error {
 	// profile that merely inherits the global version is still unpinned: naming
 	// it explicitly means "pin it here", so that a later global change does not
 	// silently move this profile.
+	//
+	// A corrupt pin is tolerated here, and only here: `ccc upgrade` must be able
+	// to repair one. Everywhere else it is a hard error.
 	current, err := a.pinnedAt(scope)
 	if err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "ccc: ignoring unreadable pin (%s)\n", err)
+		current = ""
 	}
 	rt, err := a.runtime()
 	if err != nil {
 		return err
 	}
 
-	if err := a.pin(scope, to); err != nil {
-		return err
-	}
-
-	b, err := a.builder(rt, scope)
-	if err != nil {
-		return err
-	}
+	b := a.builderWith(rt, to)
 	tag, err := b.Tag()
 	if err != nil {
 		return err
@@ -82,15 +79,18 @@ func cmdUpgrade(a *app, args []string) error {
 	// The tag hashes the pin, so an existing image already has this version.
 	// --no-cache still rebuilds: it is the only way to refresh the base image,
 	// apt, and golangci-lint, none of which the version pin can invalidate.
-	if !noCache && b.Exists(tag) {
-		if current == to {
-			fmt.Fprintf(os.Stderr, "ccc: already on %s\n", to)
-			return nil
+	if noCache || !b.Exists(tag) {
+		// Build BEFORE persisting: a version that cannot be installed must not
+		// become a pin, or every later run would fail on an unbuildable image.
+		if err := b.Build(tag, noCache); err != nil {
+			return err
 		}
-		fmt.Fprintf(os.Stderr, "ccc: pinned %s (image already built)\n", to)
+	} else if current == to {
+		fmt.Fprintf(os.Stderr, "ccc: already on %s\n", to)
 		return nil
 	}
-	if err := b.Build(tag, noCache); err != nil {
+
+	if err := a.pin(scope, to); err != nil {
 		return err
 	}
 
