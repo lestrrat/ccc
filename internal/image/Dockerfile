@@ -45,15 +45,21 @@ RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local \
 # into mounted repositories are owned by the invoking user and (b) getpwuid(3)
 # resolves, which docker's --user needs. The base image ships node:1000, which
 # collides whenever the host user is also 1000.
-# `mkdir -p $(dirname $HOME)` because useradd -m does not create missing parents,
-# and a host home may be nested (/var/home/x, /Users/x) with no parent in the image.
+#
+# Every ${HOME}/${USERNAME} interpolation is quoted: a home or short-name with a
+# space (rare, but the values are the host's, unvalidated) would otherwise
+# field-split and break useradd. `mkdir -p $(dirname $HOME)` because useradd -m
+# does not create missing parents, and a host home may be nested (/var/home/x,
+# /Users/x) with no parent in the image. The sudoers drop-in is a FIXED,
+# dot-free filename: sudo ignores any /etc/sudoers.d file whose name contains a
+# `.`, so a username like "john.doe" would otherwise silently lose sudo.
 RUN if getent passwd ${UID} >/dev/null; then userdel -r "$(getent passwd ${UID} | cut -d: -f1)" || true; fi \
  && if getent group ${GID} >/dev/null; then groupdel "$(getent group ${GID} | cut -d: -f1)" || true; fi \
- && groupadd -g ${GID} ${USERNAME} \
+ && groupadd -g ${GID} "${USERNAME}" \
  && mkdir -p "$(dirname "${HOME}")" \
- && useradd -u ${UID} -g ${GID} -s /bin/bash -d ${HOME} -m ${USERNAME} \
- && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
- && chmod 0440 /etc/sudoers.d/${USERNAME}
+ && useradd -u ${UID} -g ${GID} -s /bin/bash -d "${HOME}" -m "${USERNAME}" \
+ && printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${USERNAME}" > /etc/sudoers.d/ccc \
+ && chmod 0440 /etc/sudoers.d/ccc
 
 # Claude Code, LAST. Installed globally under /usr/local so it survives the host
 # $HOME being mounted over the container's home directory at runtime.
