@@ -100,7 +100,7 @@ func TestSetClaudeVersionRejectsInjection(t *testing.T) {
 }
 
 func TestClaudeVersionAcceptsValid(t *testing.T) {
-	for _, ok := range []string{"latest", "2.1.205", "0.0.1", "2.1.205-beta.1", "10.20.30-rc-1"} {
+	for _, ok := range []string{"latest", "2.1.205", "0.0.1", "10.20.30"} {
 		t.Run(ok, func(t *testing.T) {
 			s, _ := newStore(t, "work")
 			require.NoError(t, s.SetClaudeVersion("work", ok))
@@ -109,6 +109,15 @@ func TestClaudeVersionAcceptsValid(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, ok, v)
 		})
+	}
+}
+
+// Prereleases are refused: ccc orders on X.Y.Z alone, so a pinned prerelease
+// would compare equal to its release and never advance — a stuck profile.
+func TestClaudeVersionRejectsPrerelease(t *testing.T) {
+	s, _ := newStore(t, "work")
+	for _, bad := range []string{"2.1.205-beta.1", "10.20.30-rc-1", "1.0.0-alpha"} {
+		require.ErrorContains(t, s.SetClaudeVersion("work", bad), "no prereleases", bad)
 	}
 }
 

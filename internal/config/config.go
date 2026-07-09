@@ -101,15 +101,21 @@ type Profile struct {
 	GhConfig string `json:"gh_config,omitempty"`
 }
 
-// claudeVersionRe matches npm's "latest" dist-tag or a plain semver.
-var claudeVersionRe = regexp.MustCompile(`^(latest|[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$`)
+// claudeVersionRe matches npm's "latest" dist-tag or a plain release semver.
+//
+// Prerelease suffixes (-beta, -rc.1) are deliberately NOT accepted. ccc orders
+// versions on the X.Y.Z triple alone; a prerelease would compare equal to its
+// release, so once pinned it would never advance to the final release — a stuck
+// profile. Claude Code ships stable via npm's "latest", so the only way to pin
+// a prerelease is by hand, and that is exactly what this refuses.
+var claudeVersionRe = regexp.MustCompile(`^(latest|[0-9]+\.[0-9]+\.[0-9]+)$`)
 
 // IsNewerClaudeVersion reports whether a is a strictly newer release than b.
 //
 // b == "" or "latest" means nothing concrete is pinned, so any concrete a is
-// newer. Prerelease suffixes are ignored for ordering: this only ever gates
-// "should we adopt the version Claude Code asked for", and the safe answer for
-// an unparseable input is no.
+// newer. Inputs are release semvers (ValidateClaudeVersion rejects
+// prereleases), so ordering on the X.Y.Z triple is total; an unparseable input
+// is treated as not-newer.
 func IsNewerClaudeVersion(a string, b string) bool {
 	av, ok := parseSemver(a)
 	if !ok {
@@ -157,7 +163,7 @@ func parseSemver(v string) ([3]int, bool) {
 // anything that is not a dist-tag or a semver is an error, never a build arg.
 func ValidateClaudeVersion(v string) error {
 	if !claudeVersionRe.MatchString(v) {
-		return fmt.Errorf("invalid claude version %q: want \"latest\" or a semver like \"2.1.205\"", v)
+		return fmt.Errorf("invalid claude version %q: want \"latest\" or a release semver like \"2.1.205\" (no prereleases)", v)
 	}
 	return nil
 }
