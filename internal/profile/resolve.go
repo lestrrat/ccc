@@ -66,12 +66,14 @@ func (s *Store) resolveName(flag string, cfg *config.Config, cwd string) (Resolu
 		return Resolution{Name: flag, Source: SourceFlag}, nil
 	}
 
-	name, origin, ok, err := config.FindDir(cwd)
+	// A .ccc.json may carry only `dirs`, naming no profile. That is not a
+	// selection, so fall through to default_profile rather than erroring.
+	d, origin, ok, err := config.FindDir(cwd, s.home)
 	if err != nil {
 		return Resolution{}, err
 	}
-	if ok {
-		return Resolution{Name: name, Source: SourceDirFile, Origin: origin}, nil
+	if ok && d.Profile != "" {
+		return Resolution{Name: d.Profile, Source: SourceDirFile, Origin: origin}, nil
 	}
 
 	if cfg.DefaultProfile != "" {

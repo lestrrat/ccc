@@ -50,9 +50,15 @@ const DefaultClaudeVersion = "latest"
 
 // Mounts controls what host state the container sees.
 type Mounts struct {
-	// Roots are host directories mounted read-write at their identical absolute
-	// path. Empty means "the repository the working directory belongs to".
-	Roots []string `json:"roots,omitempty"`
+	// Dirs are extra host directories mounted read-write at their identical
+	// absolute path, in ADDITION to the repository the working directory
+	// belongs to. Never instead of it: nothing should be able to unmount the
+	// repository you are standing in.
+	//
+	// ccc does not infer these. It never reads go.mod, and knows nothing about
+	// replace directives or workspace files — if a build needs a sibling
+	// checkout, you name it here.
+	Dirs []string `json:"dirs,omitempty"`
 
 	// Home mounts the host's $HOME: "" (default) not at all, "ro" read-only,
 	// "rw" read-write.
@@ -156,9 +162,11 @@ func ValidateClaudeVersion(v string) error {
 	return nil
 }
 
-// Dir is a .ccc.json pinning a directory tree to a profile.
+// Dir is a .ccc.json: a per-checkout, per-user file. It is NOT meant to be
+// committed — profile names differ between users, and so do the paths in Dirs.
 type Dir struct {
-	Profile string `json:"profile"`
+	Profile string   `json:"profile,omitempty"`
+	Dirs    []string `json:"dirs,omitempty"`
 }
 
 // DefaultRoot returns the ccc config directory, honoring XDG.
@@ -236,15 +244,12 @@ func (c *Config) applyDefaults() error {
 		return fmt.Errorf("failed to locate home dir: %w", err)
 	}
 
-	// Roots are NOT defaulted to $HOME. An empty list means "the repository the
-	// working directory belongs to", resolved per-invocation by the caller.
-	// Mounting the whole home by default put the host's ~/.local — and with it
-	// the host's Claude Code installation — inside every container.
-	for i, r := range c.Mounts.Roots {
-		c.Mounts.Roots[i], err = Expand(r, home)
-		if err != nil {
-			return err
-		}
+	// Dirs are ADDITIVE to the repository the working directory belongs to,
+	// which the caller resolves per-invocation. $HOME is never a default:
+	// mounting it put the host's ~/.local — and with it the host's Claude Code
+	// installation — inside every container.
+	if err := expandDirs(c.Mounts.Dirs, home); err != nil {
+		return err
 	}
 
 	switch c.Mounts.Home {
@@ -337,28 +342,34 @@ func LoadProfile(path string, home string) (*Profile, error) {
 	return &p, nil
 }
 
-// FindDir walks up from start looking for a .ccc.json, returning the profile
-// it names and the file it was read from. Returns ok=false if none is found.
-func FindDir(start string) (string, string, bool, error) {
+// FindDir walks up from start looking for a .ccc.json, returning its contents
+// and the file it was read from. Returns ok=false if none is found.
+//
+// home expands ~ in Dirs. Both keys are optional individually, but a file with
+// neither is a mistake worth reporting.
+func FindDir(start string, home string) (*Dir, string, bool, error) {
 	dir := start
 	for {
 		path := filepath.Join(dir, DirConfigName)
 		if _, err := os.Stat(path); err == nil {
 			var d Dir
 			if err := readJSON(path, &d); err != nil {
-				return "", "", false, err
+				return nil, "", false, err
 			}
-			if d.Profile == "" {
-				return "", "", false, fmt.Errorf(`%s: missing "profile" key`, path)
+			if d.Profile == "" && len(d.Dirs) == 0 {
+				return nil, "", false, fmt.Errorf(`%s: needs "profile", "dirs", or both`, path)
 			}
-			return d.Profile, path, true, nil
+			if err := expandDirs(d.Dirs, home); err != nil {
+				return nil, "", false, fmt.Errorf("%s: %w", path, err)
+			}
+			return &d, path, true, nil
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			return "", "", false, fmt.Errorf("failed to stat %s: %w", path, err)
+			return nil, "", false, fmt.Errorf("failed to stat %s: %w", path, err)
 		}
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", "", false, nil
+			return nil, "", false, nil
 		}
 		dir = parent
 	}
@@ -376,4 +387,33 @@ func Expand(path string, home string) (string, error) {
 		return path, nil
 	}
 	return filepath.Clean(path), nil
+}
+
+// ExpandDir is Expand for mount directories, rejecting relative paths.
+//
+// A relative path needs a base, and the two plausible bases disagree: the
+// config file's directory, or the working directory. Rather than pick one and
+// surprise half the users, require an unambiguous path. `.ccc.json` is a
+// per-checkout, per-user file — profile names alone make it unshareable — so
+// an absolute path costs nothing.
+func ExpandDir(path string, home string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("empty mount directory")
+	}
+	if !filepath.IsAbs(path) && !strings.HasPrefix(path, "~") {
+		return "", fmt.Errorf("mount directory %q must be absolute or start with ~/", path)
+	}
+	return Expand(path, home)
+}
+
+// expandDirs validates and expands a list of mount directories.
+func expandDirs(dirs []string, home string) error {
+	for i, d := range dirs {
+		expanded, err := ExpandDir(d, home)
+		if err != nil {
+			return err
+		}
+		dirs[i] = expanded
+	}
+	return nil
 }

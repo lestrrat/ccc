@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// Roots returns the host directories to mount read-write for a session in cwd.
+// Dirs returns the host directories to mount read-write for a session in cwd.
 //
 // In a git repository that is the repository root, plus the common git
 // directory when it lives outside the root. That second path is what makes
@@ -20,18 +20,18 @@ import (
 // container a dangling gitdir and every git command fails.
 //
 // Outside a repository, or when git is unavailable, it is just cwd.
-func Roots(cwd string) []string {
+func Dirs(cwd string) []string {
 	top, common, ok := gitDirs(cwd)
 	if !ok {
 		return []string{cwd}
 	}
 
-	roots := []string{top}
+	dirs := []string{top}
 	// In a normal checkout the common dir is <top>/.git, already covered.
 	if !under(common, top) {
-		roots = append(roots, common)
+		dirs = append(dirs, common)
 	}
-	return roots
+	return dirs
 }
 
 // gitDirs asks git for the repository root and common git directory.

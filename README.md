@@ -144,7 +144,7 @@ There is no `build` command: the image builds itself on first run, and whenever 
 
 `$HOME` itself is **not** mounted. So the host's `~/.local`, `~/go`, and `~/.cache` do not exist inside the container, and neither does the host's Claude Code installation.
 
-The container user mirrors your UID, GID, username, and home directory, and roots are mounted at their **identical absolute paths**. Absolute paths therefore mean the same thing on both sides of the mount, and files written into your repositories are owned by you.
+The container user mirrors your UID, GID, username, and home directory, and every directory is mounted at its **identical absolute path**. Absolute paths therefore mean the same thing on both sides of the mount, and files written into your repositories are owned by you.
 
 Networking is `--network=host`: dev servers on localhost stay reachable, and Claude Code's OAuth loopback callback lands on your browser during login.
 
@@ -159,13 +159,38 @@ The second is what makes **worktrees** work. A worktree's `.git` is a *file* con
 
 Outside a git repository, it is just the working directory.
 
-To mount more, list them in `mounts.roots`. They are mounted read-write at their identical absolute paths, and they replace the default — so include the repository, or a parent of it:
+The working directory must live under a mounted directory. ccc refuses to run otherwise rather than silently mounting it.
+
+### Extra directories
+
+`dirs` names extra host directories, mounted read-write at their identical absolute paths. They are **additive** — always on top of the repository, never instead of it, so nothing can unmount the repo you are standing in.
+
+Machine-wide, in `config.json`:
 
 ```json
-{"mounts": {"roots": ["~/dev/src"]}}
+{"mounts": {"dirs": ["~/dev/src/github.com/jwx-go/mlkem"]}}
 ```
 
-The working directory must live under a root. ccc refuses to run otherwise rather than silently mounting it.
+Or per checkout, in `.ccc.json`:
+
+```json
+{"profile": "work", "dirs": ["~/dev/src/github.com/jwx-go/mlkem"]}
+```
+
+Paths must be **absolute or `~/`-prefixed**. A relative path needs a base, and the two plausible bases — the config file's directory, and the working directory — disagree; rather than pick one and surprise half the users, ccc rejects it. A directory that does not exist on the host is a hard error at mount time, because that beats discovering it from inside the container.
+
+ccc infers nothing. It does not read `go.mod`, and knows nothing about `replace` directives, `go.work`, or any other language's vendoring. If a build needs a sibling checkout, name it.
+
+The motivating case: `lestrrat-go/jwx` with `replace github.com/jwx-go/mlkem => ../../jwx-go/mlkem`. Mount only `jwx` and the build fails —
+
+```
+main.go:6:2: github.com/jwx-go/mlkem@v0.0.0:
+    replacement directory ../../jwx-go/mlkem does not exist
+```
+
+— because `../../jwx-go/mlkem` resolves outside the mount. Naming `mlkem` in `dirs` mounts it at its identical absolute path, so the *same relative path* resolves inside the container, and `go.mod` needs no changes.
+
+> `.ccc.json` is a **per-checkout, per-user** file. Profile names differ between users, and so do these paths. Do not commit it; add it to `.gitignore`.
 
 ### Mounting `$HOME`
 
@@ -173,7 +198,7 @@ The working directory must live under a root. ccc refuses to run otherwise rathe
 {"mounts": {"home": "ro"}}
 ```
 
-`"ro"` mounts your home read-only, with `mounts.roots` read-write on top — deeper mounts win, so the repository stays writable while the rest of your home is not. This is the safe way to get breadth.
+`"ro"` mounts your home read-only, with the repository and `mounts.dirs` read-write on top — deeper mounts win, so the repository stays writable while the rest of your home is not. This is the safe way to get breadth.
 
 It matters because a read-only *parent directory* is what actually stops the container replacing files in it. A read-only bind mount on a file does not: `rename(2)` swaps the directory entry, and the directory would still be writable. This is not theoretical — `claude install`, which Claude Code suggests when its self-update fails, does exactly that to `~/.local/bin/claude`.
 
@@ -240,7 +265,7 @@ A profile *is* a `~/.claude`, so permission behavior belongs where Claude Code a
     "claude_version": "2.1.205"
   },
   "mounts": {
-    "roots": ["~/dev/src"],
+    "dirs": ["~/dev/src/github.com/jwx-go/mlkem"],
     "home": "ro",
     "cache": true,
     "gh_config": "~/.config/gh"
@@ -252,7 +277,7 @@ A profile *is* a `~/.claude`, so permission behavior belongs where Claude Code a
 }
 ```
 
-`runtime` is `auto`, `podman`, or `docker`. `mounts.roots` defaults to the current repository. `mounts.home` is omitted, `"ro"`, or `"rw"`. `mounts.cache` is off.
+`runtime` is `auto`, `podman`, or `docker`. `mounts.dirs` is additive to the current repository. `mounts.home` is omitted, `"ro"`, or `"rw"`. `mounts.cache` is off.
 
 `profiles/<name>/profile.json`, for a per-account GitHub identity:
 
@@ -262,13 +287,16 @@ A profile *is* a `~/.claude`, so permission behavior belongs where Claude Code a
 }
 ```
 
-`.ccc.json`, in a repository root:
+`.ccc.json`, in a repository root — personal, not committed:
 
 ```json
 {
-  "profile": "work"
+  "profile": "work",
+  "dirs": ["~/dev/src/github.com/jwx-go/mlkem"]
 }
 ```
+
+Both keys are optional individually. A file with only `dirs` contributes directories and lets `default_profile` pick the account.
 
 `CCC_RUNTIME` overrides `runtime`; `--runtime` overrides both.
 

@@ -20,7 +20,7 @@ func git(t *testing.T, dir string, args ...string) {
 
 func TestRootsOutsideRepo(t *testing.T) {
 	dir := t.TempDir()
-	require.Equal(t, []string{dir}, workspace.Roots(dir))
+	require.Equal(t, []string{dir}, workspace.Dirs(dir))
 }
 
 func TestRootsInRepo(t *testing.T) {
@@ -28,8 +28,8 @@ func TestRootsInRepo(t *testing.T) {
 	git(t, repo, "init", "-q")
 
 	// The common dir is <repo>/.git, already under the root: one mount.
-	roots := workspace.Roots(repo)
-	require.Equal(t, []string{realpath(t, repo)}, roots)
+	dirs := workspace.Dirs(repo)
+	require.Equal(t, []string{realpath(t, repo)}, dirs)
 }
 
 func TestRootsFromSubdirectory(t *testing.T) {
@@ -40,7 +40,7 @@ func TestRootsFromSubdirectory(t *testing.T) {
 	require.NoError(t, exec.Command("mkdir", "-p", sub).Run())
 
 	// Mounting only cwd would leave git with no repository.
-	require.Equal(t, []string{realpath(t, repo)}, workspace.Roots(sub))
+	require.Equal(t, []string{realpath(t, repo)}, workspace.Dirs(sub))
 }
 
 // A worktree's .git is a FILE pointing at <main>/.git/worktrees/<name>. Mount
@@ -54,10 +54,10 @@ func TestRootsInWorktree(t *testing.T) {
 	wt := filepath.Join(t.TempDir(), "wt")
 	git(t, repo, "worktree", "add", "-q", wt, "-b", "feature")
 
-	roots := workspace.Roots(wt)
-	require.Len(t, roots, 2, "worktree plus the common git dir")
-	require.Equal(t, realpath(t, wt), roots[0])
-	require.Equal(t, filepath.Join(realpath(t, repo), ".git"), roots[1])
+	dirs := workspace.Dirs(wt)
+	require.Len(t, dirs, 2, "worktree plus the common git dir")
+	require.Equal(t, realpath(t, wt), dirs[0])
+	require.Equal(t, filepath.Join(realpath(t, repo), ".git"), dirs[1])
 
 	// And git actually works from there, proving the second root is the one
 	// the gitdir file points into.

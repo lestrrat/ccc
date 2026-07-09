@@ -242,9 +242,9 @@ func profileRemove(a *app, args []string) error {
 func cmdDoctor(a *app, _ []string) error {
 	fmt.Printf("config root:  %s\n", a.cfg.Root)
 	fmt.Printf("identity:     %s (uid=%d gid=%d)\n", a.id.User, a.id.UID, a.id.GID)
-	// The resolved roots, not the configured ones: an empty config means "the
-	// repository this directory belongs to", computed per-invocation.
-	fmt.Printf("mount roots:  %s\n", strings.Join(a.roots(), ", "))
+	// The resolved dirs, not the configured ones: the repository this directory
+	// belongs to, plus whatever config.json and .ccc.json add.
+	fmt.Printf("mount dirs:   %s\n", strings.Join(a.dirs(), ", "))
 
 	home := "not mounted"
 	if a.cfg.Mounts.Home != config.HomeNone {

@@ -25,7 +25,7 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	// Roots are NOT defaulted to $HOME: an empty list means "the repository the
 	// working directory belongs to", resolved per-invocation. Defaulting to the
 	// home directory put the host's ~/.local inside every container.
-	require.Empty(t, cfg.Mounts.Roots)
+	require.Empty(t, cfg.Mounts.Dirs)
 	require.Equal(t, config.HomeNone, cfg.Mounts.Home, "$HOME is not mounted by default")
 	require.False(t, cfg.Mounts.Cache, "caches are ephemeral by default")
 
@@ -54,7 +54,7 @@ func TestLoad(t *testing.T) {
   "runtime": "podman",
   "default_profile": "personal",
   "image": {"extra_dockerfile": "Dockerfile.extra"},
-  "mounts": {"roots": ["~/dev/src", "/opt/work"]},
+  "mounts": {"dirs": ["~/dev/src", "/opt/work"]},
   "env": {"deny": ["FOO"], "allow": ["ANTHROPIC_API_KEY"]}
 }`)
 
@@ -67,11 +67,21 @@ func TestLoad(t *testing.T) {
 
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
-	require.Equal(t, filepath.Join(home, "dev", "src"), cfg.Mounts.Roots[0], "~ expands")
-	require.Equal(t, "/opt/work", cfg.Mounts.Roots[1])
+	require.Equal(t, filepath.Join(home, "dev", "src"), cfg.Mounts.Dirs[0], "~ expands")
+	require.Equal(t, "/opt/work", cfg.Mounts.Dirs[1])
 
 	// A relative extra_dockerfile resolves against the ccc config dir.
 	require.Equal(t, filepath.Join(root, "Dockerfile.extra"), cfg.Image.ExtraDockerfile)
+}
+
+// A relative path needs a base, and the config file's directory and the working
+// directory disagree. Require an unambiguous path rather than pick one.
+func TestRelativeDirsRejected(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, config.FileName), `{"mounts": {"dirs": ["../sibling"]}}`)
+
+	_, err := config.Load(root)
+	require.ErrorContains(t, err, "must be absolute or start with ~/")
 }
 
 func TestLoadInvalidJSON(t *testing.T) {
@@ -166,10 +176,10 @@ func TestFindDir(t *testing.T) {
 		deep := filepath.Join(root, "a", "b")
 		require.NoError(t, os.MkdirAll(deep, 0o755))
 
-		name, origin, ok, err := config.FindDir(deep)
+		d, origin, ok, err := config.FindDir(deep, "/home/u")
 		require.NoError(t, err)
 		require.True(t, ok)
-		require.Equal(t, "work", name)
+		require.Equal(t, "work", d.Profile)
 		require.Equal(t, filepath.Join(root, config.DirConfigName), origin)
 	})
 
@@ -181,31 +191,50 @@ func TestFindDir(t *testing.T) {
 		require.NoError(t, os.MkdirAll(inner, 0o755))
 		write(t, filepath.Join(inner, config.DirConfigName), `{"profile": "inner"}`)
 
-		name, _, ok, err := config.FindDir(inner)
+		d, _, ok, err := config.FindDir(inner, "/home/u")
 		require.NoError(t, err)
 		require.True(t, ok)
-		require.Equal(t, "inner", name)
+		require.Equal(t, "inner", d.Profile)
 	})
 
 	t.Run("absent", func(t *testing.T) {
-		_, _, ok, err := config.FindDir(t.TempDir())
+		_, _, ok, err := config.FindDir(t.TempDir(), "/home/u")
 		require.NoError(t, err)
 		require.False(t, ok)
 	})
 
-	t.Run("present but missing profile key", func(t *testing.T) {
+	t.Run("empty file is a mistake", func(t *testing.T) {
 		root := t.TempDir()
 		write(t, filepath.Join(root, config.DirConfigName), `{}`)
 
-		_, _, _, err := config.FindDir(root)
-		require.ErrorContains(t, err, `missing "profile" key`)
+		_, _, _, err := config.FindDir(root, "/home/u")
+		require.ErrorContains(t, err, `needs "profile", "dirs", or both`)
+	})
+
+	t.Run("dirs without a profile is valid", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, filepath.Join(root, config.DirConfigName), `{"dirs": ["~/x"]}`)
+
+		d, _, ok, err := config.FindDir(root, "/home/u")
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Empty(t, d.Profile, "not a profile selection; falls through")
+		require.Equal(t, []string{"/home/u/x"}, d.Dirs)
+	})
+
+	t.Run("relative dirs are rejected", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, filepath.Join(root, config.DirConfigName), `{"dirs": ["../../jwx-go/mlkem"]}`)
+
+		_, _, _, err := config.FindDir(root, "/home/u")
+		require.ErrorContains(t, err, "must be absolute or start with ~/")
 	})
 
 	t.Run("present but malformed", func(t *testing.T) {
 		root := t.TempDir()
 		write(t, filepath.Join(root, config.DirConfigName), `not json`)
 
-		_, _, _, err := config.FindDir(root)
+		_, _, _, err := config.FindDir(root, "/home/u")
 		require.ErrorContains(t, err, "failed to parse")
 	})
 }

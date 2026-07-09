@@ -44,6 +44,8 @@ type app struct {
 	store   *profile.Store
 	id      container.Identity
 	cwd     string
+	// dirFile is the nearest .ccc.json, or nil. A per-checkout, per-user file.
+	dirFile *config.Dir
 }
 
 // Run executes ccc. argv excludes the program name.
@@ -124,12 +126,18 @@ func newApp(g globals) (*app, error) {
 		return nil, fmt.Errorf("failed to determine working directory: %w", err)
 	}
 
+	dirFile, _, _, err := config.FindDir(cwd, id.Home)
+	if err != nil {
+		return nil, err
+	}
+
 	return &app{
 		globals: g,
 		cfg:     cfg,
 		store:   profile.NewStore(root, id.Home),
 		id:      id,
 		cwd:     cwd,
+		dirFile: dirFile,
 	}, nil
 }
 

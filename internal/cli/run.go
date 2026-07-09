@@ -217,11 +217,14 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 		out = append(out, container.Mount{Source: a.id.Home, Target: a.id.Home})
 	}
 
-	for _, root := range a.roots() {
-		if _, err := os.Stat(root); err != nil {
-			return nil, fmt.Errorf("mount root %s is not accessible: %w", root, err)
+	// A missing dir is fatal here, not inside the container: failing with the
+	// host path beats `replacement directory ../../x does not exist` from a
+	// container that silently lacks the mount.
+	for _, dir := range a.dirs() {
+		if _, err := os.Stat(dir); err != nil {
+			return nil, fmt.Errorf("mount directory %s is not accessible: %w", dir, err)
 		}
-		out = append(out, container.Mount{Source: root, Target: root})
+		out = append(out, container.Mount{Source: dir, Target: dir})
 	}
 
 	if a.cfg.Mounts.Cache {
@@ -324,13 +327,28 @@ func (a *app) ghConfig(name string) (string, error) {
 	return dir, nil
 }
 
-// roots are the read-write host directories for this session: the configured
-// ones, or — by default — the repository the working directory belongs to.
-func (a *app) roots() []string {
-	if len(a.cfg.Mounts.Roots) > 0 {
-		return a.cfg.Mounts.Roots
+// dirs are the read-write host directories for this session.
+//
+// Always the repository the working directory belongs to, plus whatever
+// config.json and .ccc.json add. Additive, never replacing: a repo's .ccc.json
+// must not be able to unmount the repo itself, nor revoke a machine-wide dir.
+func (a *app) dirs() []string {
+	all := workspace.Dirs(a.cwd)
+	all = append(all, a.cfg.Mounts.Dirs...)
+	if a.dirFile != nil {
+		all = append(all, a.dirFile.Dirs...)
 	}
-	return workspace.Roots(a.cwd)
+
+	seen := make(map[string]struct{}, len(all))
+	out := make([]string, 0, len(all))
+	for _, d := range all {
+		if _, dup := seen[d]; dup {
+			continue
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	return out
 }
 
 // env forwards the host environment minus the denylist, then re-adds the
@@ -353,17 +371,17 @@ func (a *app) env() map[string]string {
 	return m
 }
 
-// checkWorkdir refuses to run outside the mounted roots rather than silently
+// checkWorkdir refuses to run outside the mounted dirs rather than silently
 // mounting the working directory behind the user's back.
 func (a *app) checkWorkdir() error {
-	roots := a.roots()
-	for _, root := range roots {
-		if underRoot(a.cwd, root) {
+	dirs := a.dirs()
+	for _, dir := range dirs {
+		if underRoot(a.cwd, dir) {
 			return nil
 		}
 	}
-	return fmt.Errorf("working directory %s is not under any mount root (%s):\nadd it to mounts.roots in %s/config.json",
-		a.cwd, strings.Join(roots, ", "), a.cfg.Root)
+	return fmt.Errorf("working directory %s is not under any mounted directory (%s):\nadd it to mounts.dirs in %s/config.json",
+		a.cwd, strings.Join(dirs, ", "), a.cfg.Root)
 }
 
 func underRoot(path string, root string) bool {
