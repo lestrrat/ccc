@@ -7,21 +7,7 @@ import (
 
 	"github.com/lestrrat-go/ccc/internal/config"
 	"github.com/lestrrat-go/ccc/internal/image"
-	"github.com/lestrrat-go/ccc/internal/profile"
 )
-
-// cmdLogin runs Claude Code's interactive auth in the profile's container.
-// Host networking means the OAuth loopback callback reaches the host browser.
-func cmdLogin(a *app, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: ccc login <profile>")
-	}
-	name := args[0]
-	if !a.store.Exists(name) {
-		return fmt.Errorf("%q: %w (create it with `ccc profile create %s`)", name, profile.ErrNotExist, name)
-	}
-	return a.exec(profile.Resolution{Name: name, Source: profile.SourceFlag}, []string{"claude", "auth", "login"})
-}
 
 func cmdBuild(a *app, args []string) error {
 	var noCache bool
@@ -107,7 +93,7 @@ func profileCreate(a *app, args []string) error {
 		return err
 	}
 	if from == "" {
-		fmt.Fprintf(os.Stderr, "created profile %s\nauthenticate it with `ccc login %s`\n", name, name)
+		fmt.Fprintf(os.Stderr, "created profile %s\nrun `ccc -p %s`; Claude Code will prompt you to log in\n", name, name)
 		return nil
 	}
 

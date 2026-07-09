@@ -107,8 +107,8 @@ func commonRunArgs(spec Spec) []string {
 		args = append(args, "-i")
 	}
 
-	// Host networking: dev servers on localhost stay reachable, and the OAuth
-	// loopback callback during `ccc login` lands on the host's browser.
+	// Host networking: dev servers on localhost stay reachable, and Claude Code's
+	// OAuth loopback callback lands on the host's browser during login.
 	args = append(args, "--network", "host")
 
 	for _, m := range sortMounts(spec.Mounts) {

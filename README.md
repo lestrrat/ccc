@@ -3,9 +3,9 @@
 Run Claude Code in a container so that `~/.claude` can be swapped per account, without touching the host's real configuration.
 
 ```sh
-ccc                                         # first run: creates a "default" profile
-ccc profile create work --from ~/.claude    # a second account, seeded from your config
-ccc login work
+ccc                                         # first run: creates a "default" profile, then logs you in
+ccc profile create work                     # a second account
+ccc -p work                                 # Claude Code prompts you to log in
 cd ~/dev/src/acme && echo '{"profile": "work"}' > .ccc.json
 ccc                                         # starts Claude Code as the "work" account
 ```
@@ -55,7 +55,12 @@ ccc profile create work              # empty profile
 ccc profile create work --from ~/.claude   # seed from an existing config
 ccc profile list                     # `*` marks default_profile
 ccc profile rm work                  # deletes credentials too
-ccc login work                       # interactive OAuth, persisted
+```
+
+There is no `ccc login`. A profile with no credentials is just a fresh `~/.claude`, so Claude Code runs its own setup and prompts you — exactly as it would on the host. To re-authenticate an existing profile, pass its own command through:
+
+```sh
+ccc -p work -- auth login
 ```
 
 ### Selection
@@ -93,7 +98,7 @@ ccc -- --help                          # claude's help
 ccc -- doctor                          # `claude doctor`, not `ccc doctor`
 ```
 
-`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `login`, `profile`, `build`, `doctor`, `help`, `version`, `--help`, `-h`, `--profile`, `-p`, `--runtime`.
+`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `profile`, `build`, `doctor`, `help`, `version`, `--help`, `-h`, `--profile`, `-p`, `--runtime`.
 
 Other commands:
 
@@ -117,7 +122,7 @@ ccc help                 # same as ccc --help
 
 The container user mirrors your UID, GID, username, and home directory, and roots are mounted at their **identical absolute paths**. Absolute paths therefore mean the same thing on both sides of the mount, and files written into your repositories are owned by you.
 
-Networking is `--network=host`: dev servers on localhost stay reachable, and the OAuth loopback callback during `ccc login` lands on your browser.
+Networking is `--network=host`: dev servers on localhost stay reachable, and Claude Code's OAuth loopback callback lands on your browser during login.
 
 The working directory must live under a configured root. ccc refuses to run otherwise rather than silently mounting it.
 

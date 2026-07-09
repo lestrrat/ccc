@@ -22,7 +22,6 @@ var Version = "dev"
 // reserved first-arguments. Everything else is passed to `claude`; `--` forces
 // passthrough when a claude argument would collide with one of these.
 var reserved = map[string]func(*app, []string) error{
-	"login":   cmdLogin,
 	"profile": cmdProfile,
 	"build":   cmdBuild,
 	"doctor":  cmdDoctor,
@@ -176,7 +175,6 @@ usage:
   ccc -- <claude args...>        pass everything through to claude verbatim
 
 commands:
-  login <profile>            authenticate a profile (runs ` + "`claude auth login`" + `)
   profile create <name>      create a profile
     --from <dir>             seed it from an existing ~/.claude
   profile list               list profiles ('*' marks default_profile)
@@ -185,6 +183,9 @@ commands:
   doctor                     check runtime, image, mounts, profile
   version                    print version
   help                       print this help
+
+There is no login command: a profile with no credentials makes Claude Code
+run its own setup. To re-authenticate one, run ` + "`ccc -p <name> -- auth login`" + `.
 
 flags:
   -p, --profile <name>       profile to run as

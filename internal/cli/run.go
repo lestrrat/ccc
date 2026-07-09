@@ -65,10 +65,10 @@ func (a *app) bootstrap() (profile.Resolution, error) {
 	a.cfg.DefaultProfile = name
 
 	// The profile starts empty: ccc never copies credentials without being
-	// asked. Claude Code will prompt for login on first use.
+	// asked, so Claude Code runs its own setup and prompts for login.
 	fmt.Fprintf(os.Stderr, "ccc: first run — created profile %q\n", name)
 	fmt.Fprintf(os.Stderr,
-		"ccc: it has no credentials yet; seed an existing config with `ccc profile create <name> --from ~/.claude`\n")
+		"ccc: to start from an existing config instead: `ccc profile create <name> --from ~/.claude`\n")
 
 	if created {
 		fmt.Fprintf(os.Stderr, "ccc: wrote %s/%s naming it default_profile\n", a.cfg.Root, config.FileName)
