@@ -1,66 +1,68 @@
 // Package config loads ccc's global config, per-profile config, and the
-// per-directory .ccc.toml that pins a directory tree to a profile.
+// per-directory .ccc.json that pins a directory tree to a profile.
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/BurntSushi/toml"
 )
 
 // DirConfigName is the per-directory config file naming a profile.
-const DirConfigName = ".ccc.toml"
+const DirConfigName = ".ccc.json"
 
-// Config is ~/.config/ccc/config.toml.
+// FileName is the global config file, relative to the ccc config root.
+const FileName = "config.json"
+
+// Config is ~/.config/ccc/config.json.
 type Config struct {
-	Runtime        string `toml:"runtime"`
-	DefaultProfile string `toml:"default_profile"`
-	Image          Image  `toml:"image"`
-	Mounts         Mounts `toml:"mounts"`
-	Env            Env    `toml:"env"`
+	Runtime        string `json:"runtime,omitempty"`
+	DefaultProfile string `json:"default_profile,omitempty"`
+	Image          Image  `json:"image,omitzero"`
+	Mounts         Mounts `json:"mounts,omitzero"`
+	Env            Env    `json:"env,omitzero"`
 
 	// Root is the ccc config directory this Config was loaded from.
-	Root string `toml:"-"`
+	Root string `json:"-"`
 }
 
 // Image controls how the container image is produced.
 type Image struct {
 	// ExtraDockerfile is appended verbatim to the base Dockerfile.
 	// Relative paths resolve against the ccc config directory.
-	ExtraDockerfile string `toml:"extra_dockerfile"`
+	ExtraDockerfile string `json:"extra_dockerfile,omitempty"`
 }
 
 // Mounts controls what host state the container sees.
 type Mounts struct {
 	// Roots are host directories mounted at their identical absolute path.
 	// The working directory must live under one of them.
-	Roots []string `toml:"roots"`
+	Roots []string `json:"roots,omitempty"`
 	// GhConfig is the gh CLI config directory. A profile may override it.
-	GhConfig string `toml:"gh_config"`
+	GhConfig string `json:"gh_config,omitempty"`
 }
 
 // Env controls environment inheritance. ccc forwards the whole host
 // environment minus a built-in denylist; these extend and override it.
 type Env struct {
-	Deny  []string `toml:"deny"`
-	Allow []string `toml:"allow"`
+	Deny  []string `json:"deny,omitempty"`
+	Allow []string `json:"allow,omitempty"`
 }
 
-// Profile is profiles/<name>/profile.toml. Everything Claude Code itself can
+// Profile is profiles/<name>/profile.json. Everything Claude Code itself can
 // read lives in the profile's claude/ directory, so this stays deliberately
 // small: it holds only settings Claude Code cannot know about.
 type Profile struct {
-	GhConfig string `toml:"gh_config"`
+	GhConfig string `json:"gh_config,omitempty"`
 }
 
-// Dir is a .ccc.toml pinning a directory tree to a profile.
+// Dir is a .ccc.json pinning a directory tree to a profile.
 type Dir struct {
-	Profile string `toml:"profile"`
+	Profile string `json:"profile"`
 }
 
 // DefaultRoot returns the ccc config directory, honoring XDG.
@@ -72,15 +74,50 @@ func DefaultRoot() (string, error) {
 	return filepath.Join(dir, "ccc"), nil
 }
 
-// Load reads config.toml from root, applying defaults. A missing file is not
+// readJSON decodes path into v. A missing file leaves v untouched.
+func readJSON(path string, v any) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return fmt.Errorf("failed to parse %s: %w", path, err)
+	}
+	return nil
+}
+
+// writeJSON writes v to path via a temp file, so a crash cannot leave a
+// truncated config behind.
+func writeJSON(path string, v any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("failed to create %s: %w", filepath.Dir(path), err)
+	}
+
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode %s: %w", path, err)
+	}
+	b = append(b, '\n')
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return fmt.Errorf("failed to write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("failed to replace %s: %w", path, err)
+	}
+	return nil
+}
+
+// Load reads config.json from root, applying defaults. A missing file is not
 // an error: ccc must work with no configuration at all.
 func Load(root string) (*Config, error) {
-	cfg := &Config{Root: root}
-	path := filepath.Join(root, "config.toml")
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("failed to parse %s: %w", path, err)
-		}
+	cfg := &Config{}
+	if err := readJSON(filepath.Join(root, FileName), cfg); err != nil {
+		return nil, err
 	}
 	cfg.Root = root
 
@@ -136,15 +173,32 @@ func (c *Config) applyDefaults() error {
 	return nil
 }
 
-// LoadProfile reads profiles/<name>/profile.toml. A missing file yields a
+// SetDefaultProfile records default_profile in config.json, preserving every
+// other setting. No-op when default_profile is already set.
+func SetDefaultProfile(root string, name string) error {
+	path := filepath.Join(root, FileName)
+
+	// Re-read raw rather than reusing a loaded Config: applyDefaults()
+	// materializes derived values (mount roots, gh_config) that must not be
+	// frozen into the file as if the user had written them.
+	var raw Config
+	if err := readJSON(path, &raw); err != nil {
+		return err
+	}
+	if raw.DefaultProfile != "" {
+		return nil
+	}
+
+	raw.DefaultProfile = name
+	return writeJSON(path, &raw)
+}
+
+// LoadProfile reads profiles/<name>/profile.json. A missing file yields a
 // zero Profile.
 func LoadProfile(path string, home string) (*Profile, error) {
 	var p Profile
-	if _, err := toml.DecodeFile(path, &p); err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("failed to parse %s: %w", path, err)
-		}
-		return &p, nil
+	if err := readJSON(path, &p); err != nil {
+		return nil, err
 	}
 	if p.GhConfig != "" {
 		expanded, err := Expand(p.GhConfig, home)
@@ -156,21 +210,23 @@ func LoadProfile(path string, home string) (*Profile, error) {
 	return &p, nil
 }
 
-// FindDir walks up from start looking for a .ccc.toml, returning the profile
+// FindDir walks up from start looking for a .ccc.json, returning the profile
 // it names and the file it was read from. Returns ok=false if none is found.
 func FindDir(start string) (string, string, bool, error) {
 	dir := start
 	for {
 		path := filepath.Join(dir, DirConfigName)
-		var d Dir
-		_, err := toml.DecodeFile(path, &d)
-		switch {
-		case err == nil && d.Profile != "":
+		if _, err := os.Stat(path); err == nil {
+			var d Dir
+			if err := readJSON(path, &d); err != nil {
+				return "", "", false, err
+			}
+			if d.Profile == "" {
+				return "", "", false, fmt.Errorf(`%s: missing "profile" key`, path)
+			}
 			return d.Profile, path, true, nil
-		case err == nil:
-			return "", "", false, fmt.Errorf("%s: missing `profile` key", path)
-		case !errors.Is(err, fs.ErrNotExist):
-			return "", "", false, fmt.Errorf("failed to parse %s: %w", path, err)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return "", "", false, fmt.Errorf("failed to stat %s: %w", path, err)
 		}
 
 		parent := filepath.Dir(dir)

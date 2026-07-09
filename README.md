@@ -3,10 +3,11 @@
 Run Claude Code in a container so that `~/.claude` can be swapped per account, without touching the host's real configuration.
 
 ```sh
-ccc profile create work --from ~/.claude
+ccc                                         # first run: creates a "default" profile
+ccc profile create work --from ~/.claude    # a second account, seeded from your config
 ccc login work
-cd ~/dev/src/acme && echo 'profile = "work"' > .ccc.toml
-ccc            # starts Claude Code as the "work" account
+cd ~/dev/src/acme && echo '{"profile": "work"}' > .ccc.json
+ccc                                         # starts Claude Code as the "work" account
 ```
 
 ## Why
@@ -40,13 +41,13 @@ One profile = one account = one host directory = one container `$HOME` overlay.
 
 ```
 ~/.config/ccc/
-  config.toml              # global config
+  config.json              # global config
   Dockerfile.extra         # optional, appended to the base image
   profiles/
     work/
       claude/              # mounted at $HOME/.claude
       claude.json          # mounted at $HOME/.claude.json
-      profile.toml         # optional per-profile overrides
+      profile.json         # optional per-profile overrides
 ```
 
 ```sh
@@ -62,10 +63,22 @@ ccc login work                       # interactive OAuth, persisted
 First match wins:
 
 1. `--profile <name>`
-2. `.ccc.toml` in the current directory or an ancestor (`profile = "work"`)
-3. `default_profile` in `config.toml`
+2. `.ccc.json` in the current directory or an ancestor
+3. `default_profile` in `config.json`
 
 Otherwise ccc errors and lists the available profiles. It never guesses — a wrong-account run is worse than a failed one. Every run prints the resolved profile to stderr, so a `default_profile` run is never silent about which account it used.
+
+### First run
+
+With no profiles at all, `ccc` creates one named `default` and records it as `default_profile`, so a bare `ccc` keeps working once you add a second profile later.
+
+This is the one case where ccc acts without being told which account to use, and it is safe precisely because there are zero profiles: there is no account to pick wrongly. The moment one exists, an unresolved run is an error again — a typo'd `--profile` never creates anything.
+
+The new profile is **empty**. ccc does not copy credentials without being asked, so Claude Code will prompt you to log in. To start from your existing setup instead:
+
+```sh
+ccc profile create default --from ~/.claude
+```
 
 ## Usage
 
@@ -127,7 +140,7 @@ Extend with `env.deny`; re-admit a dropped variable with `env.allow` (which wins
 
 Handled by the host, not by ccc. If you use direnv to set `GIT_SSH_COMMAND` per directory, ccc inherits it, and `~/.ssh` is mounted, so `-i ~/.ssh/id_work` resolves inside the container exactly as it does outside.
 
-ccc adds no identity configuration of its own. `profile.toml`'s `gh_config` exists only because `gh` reads `~/.config/gh`, which direnv cannot override.
+ccc adds no identity configuration of its own. `profile.json`'s `gh_config` exists only because `gh` reads `~/.config/gh`, which direnv cannot override.
 
 ## Permissions
 
@@ -140,34 +153,42 @@ A profile *is* a `~/.claude`, so permission behavior belongs where Claude Code a
 
 ## Configuration
 
-`~/.config/ccc/config.toml`:
+`~/.config/ccc/config.json`. Every key is optional:
 
-```toml
-runtime = "auto"                 # auto | podman | docker
-default_profile = "personal"     # optional
-
-[image]
-extra_dockerfile = "Dockerfile.extra"
-
-[mounts]
-roots = ["~/dev/src"]            # default: ["~"]
-gh_config = "~/.config/gh"
-
-[env]
-deny  = []
-allow = []
+```json
+{
+  "runtime": "auto",
+  "default_profile": "personal",
+  "image": {
+    "extra_dockerfile": "Dockerfile.extra"
+  },
+  "mounts": {
+    "roots": ["~/dev/src"],
+    "gh_config": "~/.config/gh"
+  },
+  "env": {
+    "deny": [],
+    "allow": []
+  }
+}
 ```
 
-`profiles/<name>/profile.toml`:
+`runtime` is `auto`, `podman`, or `docker`. `mounts.roots` defaults to `["~"]`.
 
-```toml
-gh_config = "~/.config/gh-work"  # optional per-account GitHub identity
+`profiles/<name>/profile.json`, for a per-account GitHub identity:
+
+```json
+{
+  "gh_config": "~/.config/gh-work"
+}
 ```
 
-`.ccc.toml`, in a repository root:
+`.ccc.json`, in a repository root:
 
-```toml
-profile = "work"
+```json
+{
+  "profile": "work"
+}
 ```
 
 `CCC_RUNTIME` overrides `runtime`; `--runtime` overrides both.

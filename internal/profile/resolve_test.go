@@ -38,7 +38,7 @@ func TestResolve(t *testing.T) {
 		cfg := &config.Config{DefaultProfile: "personal"}
 
 		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, config.DirConfigName), []byte(`profile = "work"`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.DirConfigName), []byte(`{"profile": "work"}`), 0o600))
 
 		got, err := s.Resolve("", cfg, dir)
 		require.NoError(t, err)
@@ -50,7 +50,7 @@ func TestResolve(t *testing.T) {
 	t.Run("dir config found in ancestor", func(t *testing.T) {
 		s, _ := newStore(t, "work")
 		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, config.DirConfigName), []byte(`profile = "work"`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.DirConfigName), []byte(`{"profile": "work"}`), 0o600))
 
 		deep := filepath.Join(dir, "a", "b", "c")
 		require.NoError(t, os.MkdirAll(deep, 0o755))
@@ -74,7 +74,7 @@ func TestResolve(t *testing.T) {
 		s, _ := newStore(t, "work", "personal")
 
 		_, err := s.Resolve("", &config.Config{}, t.TempDir())
-		require.ErrorContains(t, err, "no profile selected")
+		require.ErrorIs(t, err, profile.ErrNoSelection)
 		require.ErrorContains(t, err, "personal, work", "error must list what is available")
 	})
 
@@ -83,6 +83,9 @@ func TestResolve(t *testing.T) {
 
 		_, err := s.Resolve("nope", &config.Config{}, t.TempDir())
 		require.ErrorIs(t, err, profile.ErrNotExist)
+		// Only ErrNoSelection may bootstrap a first profile. A typo'd --profile
+		// must never silently create one.
+		require.NotErrorIs(t, err, profile.ErrNoSelection)
 	})
 
 	t.Run("rejects names that escape the profiles dir", func(t *testing.T) {
@@ -94,8 +97,8 @@ func TestResolve(t *testing.T) {
 }
 
 func TestResolutionString(t *testing.T) {
-	r := profile.Resolution{Name: "work", Source: profile.SourceDirFile, Origin: "/src/.ccc.toml"}
-	require.Equal(t, "work (via /src/.ccc.toml)", r.String())
+	r := profile.Resolution{Name: "work", Source: profile.SourceDirFile, Origin: "/src/.ccc.json"}
+	require.Equal(t, "work (via /src/.ccc.json)", r.String())
 
 	r = profile.Resolution{Name: "personal", Source: profile.SourceDefault}
 	require.Equal(t, "personal (via default_profile)", r.String())

@@ -45,10 +45,10 @@ func (s *Store) ClaudeDir(name string) string { return filepath.Join(s.Dir(name)
 // ClaudeJSON is mounted at $HOME/.claude.json in the container.
 func (s *Store) ClaudeJSON(name string) string { return filepath.Join(s.Dir(name), "claude.json") }
 
-// ConfigPath is the profile's profile.toml.
-func (s *Store) ConfigPath(name string) string { return filepath.Join(s.Dir(name), "profile.toml") }
+// ConfigPath is the profile's profile.json.
+func (s *Store) ConfigPath(name string) string { return filepath.Join(s.Dir(name), "profile.json") }
 
-// Config loads the profile's profile.toml.
+// Config loads the profile's profile.json.
 func (s *Store) Config(name string) (*config.Profile, error) {
 	return config.LoadProfile(s.ConfigPath(name), s.home)
 }

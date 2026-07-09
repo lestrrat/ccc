@@ -203,6 +203,6 @@ claude. Use -- to force passthrough when a claude argument collides.
 
 profile resolution, first match wins:
   1. --profile <name>
-  2. .ccc.toml in the current directory or an ancestor
-  3. default_profile in ~/.config/ccc/config.toml
+  2. .ccc.json in the current directory or an ancestor
+  3. default_profile in ~/.config/ccc/config.json
 `

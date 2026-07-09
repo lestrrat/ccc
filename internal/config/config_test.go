@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,11 @@ import (
 	"github.com/lestrrat-go/ccc/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+func write(t *testing.T, path string, body string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+}
 
 func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	t.Setenv("CCC_RUNTIME", "")
@@ -24,21 +30,13 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	root := t.TempDir()
-	body := `
-runtime = "podman"
-default_profile = "personal"
-
-[image]
-extra_dockerfile = "Dockerfile.extra"
-
-[mounts]
-roots = ["~/dev/src", "/opt/work"]
-
-[env]
-deny = ["FOO"]
-allow = ["ANTHROPIC_API_KEY"]
-`
-	require.NoError(t, os.WriteFile(filepath.Join(root, "config.toml"), []byte(body), 0o600))
+	write(t, filepath.Join(root, config.FileName), `{
+  "runtime": "podman",
+  "default_profile": "personal",
+  "image": {"extra_dockerfile": "Dockerfile.extra"},
+  "mounts": {"roots": ["~/dev/src", "/opt/work"]},
+  "env": {"deny": ["FOO"], "allow": ["ANTHROPIC_API_KEY"]}
+}`)
 
 	cfg, err := config.Load(root)
 	require.NoError(t, err)
@@ -52,13 +50,13 @@ allow = ["ANTHROPIC_API_KEY"]
 	require.Equal(t, filepath.Join(home, "dev", "src"), cfg.Mounts.Roots[0], "~ expands")
 	require.Equal(t, "/opt/work", cfg.Mounts.Roots[1])
 
-	// Relative extra_dockerfile resolves against the ccc config dir.
+	// A relative extra_dockerfile resolves against the ccc config dir.
 	require.Equal(t, filepath.Join(root, "Dockerfile.extra"), cfg.Image.ExtraDockerfile)
 }
 
-func TestLoadInvalidTOML(t *testing.T) {
+func TestLoadInvalidJSON(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "config.toml"), []byte("runtime = ["), 0o600))
+	write(t, filepath.Join(root, config.FileName), `{"runtime":`)
 
 	_, err := config.Load(root)
 	require.ErrorContains(t, err, "failed to parse")
@@ -66,7 +64,7 @@ func TestLoadInvalidTOML(t *testing.T) {
 
 func TestCCCRuntimeEnvOverrides(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "config.toml"), []byte(`runtime = "podman"`), 0o600))
+	write(t, filepath.Join(root, config.FileName), `{"runtime": "podman"}`)
 	t.Setenv("CCC_RUNTIME", "docker")
 
 	cfg, err := config.Load(root)
@@ -74,10 +72,72 @@ func TestCCCRuntimeEnvOverrides(t *testing.T) {
 	require.Equal(t, "docker", cfg.Runtime)
 }
 
+func TestSetDefaultProfile(t *testing.T) {
+	t.Run("creates config when absent", func(t *testing.T) {
+		root := t.TempDir()
+		require.NoError(t, config.SetDefaultProfile(root, "default"))
+
+		cfg, err := config.Load(root)
+		require.NoError(t, err)
+		require.Equal(t, "default", cfg.DefaultProfile)
+	})
+
+	t.Run("preserves existing settings", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, filepath.Join(root, config.FileName), `{
+  "runtime": "docker",
+  "mounts": {"roots": ["/opt/work"]},
+  "env": {"deny": ["FOO"]}
+}`)
+		require.NoError(t, config.SetDefaultProfile(root, "default"))
+
+		cfg, err := config.Load(root)
+		require.NoError(t, err)
+		require.Equal(t, "default", cfg.DefaultProfile)
+		require.Equal(t, "docker", cfg.Runtime)
+		require.Equal(t, []string{"/opt/work"}, cfg.Mounts.Roots)
+		require.Equal(t, []string{"FOO"}, cfg.Env.Deny)
+	})
+
+	t.Run("does not freeze derived defaults into the file", func(t *testing.T) {
+		root := t.TempDir()
+		require.NoError(t, config.SetDefaultProfile(root, "default"))
+
+		// Load() materializes mount roots and gh_config; those are derived, not
+		// user intent, and must not be written back as if they were.
+		b, err := os.ReadFile(filepath.Join(root, config.FileName))
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(b, &raw))
+		require.Equal(t, map[string]any{"default_profile": "default"}, raw)
+	})
+
+	t.Run("never overwrites an existing default_profile", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, filepath.Join(root, config.FileName), `{"default_profile": "mine"}`)
+		require.NoError(t, config.SetDefaultProfile(root, "default"))
+
+		cfg, err := config.Load(root)
+		require.NoError(t, err)
+		require.Equal(t, "mine", cfg.DefaultProfile)
+	})
+
+	t.Run("leaves no temp file behind", func(t *testing.T) {
+		root := t.TempDir()
+		require.NoError(t, config.SetDefaultProfile(root, "default"))
+
+		entries, err := os.ReadDir(root)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		require.Equal(t, config.FileName, entries[0].Name())
+	})
+}
+
 func TestFindDir(t *testing.T) {
 	t.Run("finds in ancestor", func(t *testing.T) {
 		root := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(root, config.DirConfigName), []byte(`profile = "work"`), 0o600))
+		write(t, filepath.Join(root, config.DirConfigName), `{"profile": "work"}`)
 
 		deep := filepath.Join(root, "a", "b")
 		require.NoError(t, os.MkdirAll(deep, 0o755))
@@ -91,11 +151,11 @@ func TestFindDir(t *testing.T) {
 
 	t.Run("nearest wins", func(t *testing.T) {
 		root := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(root, config.DirConfigName), []byte(`profile = "outer"`), 0o600))
+		write(t, filepath.Join(root, config.DirConfigName), `{"profile": "outer"}`)
 
 		inner := filepath.Join(root, "inner")
 		require.NoError(t, os.MkdirAll(inner, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(inner, config.DirConfigName), []byte(`profile = "inner"`), 0o600))
+		write(t, filepath.Join(inner, config.DirConfigName), `{"profile": "inner"}`)
 
 		name, _, ok, err := config.FindDir(inner)
 		require.NoError(t, err)
@@ -111,10 +171,18 @@ func TestFindDir(t *testing.T) {
 
 	t.Run("present but missing profile key", func(t *testing.T) {
 		root := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(root, config.DirConfigName), []byte("# empty"), 0o600))
+		write(t, filepath.Join(root, config.DirConfigName), `{}`)
 
 		_, _, _, err := config.FindDir(root)
-		require.ErrorContains(t, err, "missing `profile` key")
+		require.ErrorContains(t, err, `missing "profile" key`)
+	})
+
+	t.Run("present but malformed", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, filepath.Join(root, config.DirConfigName), `not json`)
+
+		_, _, _, err := config.FindDir(root)
+		require.ErrorContains(t, err, "failed to parse")
 	})
 }
 

@@ -115,6 +115,18 @@ func TestListEmptyStore(t *testing.T) {
 	require.Empty(t, names)
 }
 
+func TestIsEmpty(t *testing.T) {
+	s := profile.NewStore(t.TempDir(), t.TempDir())
+	empty, err := s.IsEmpty()
+	require.NoError(t, err)
+	require.True(t, empty, "an unwritten store is empty, not an error")
+
+	require.NoError(t, s.Create("default"))
+	empty, err = s.IsEmpty()
+	require.NoError(t, err)
+	require.False(t, empty)
+}
+
 func TestValidateName(t *testing.T) {
 	for _, bad := range []string{"", "../etc", "a/b", ".hidden", "-lead"} {
 		require.Error(t, profile.ValidateName(bad), "must reject %q", bad)

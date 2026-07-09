@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/lestrrat-go/ccc/internal/config"
 	"github.com/lestrrat-go/ccc/internal/container"
 	ccenv "github.com/lestrrat-go/ccc/internal/env"
 	"github.com/lestrrat-go/ccc/internal/image"
@@ -18,11 +19,57 @@ import (
 // cmdClaude is the default command: resolve a profile, ensure the image, and
 // hand the terminal to Claude Code inside the container.
 func cmdClaude(a *app, args []string) error {
-	res, err := a.store.Resolve(a.globals.profile, a.cfg, a.cwd)
+	res, err := a.resolveOrBootstrap()
 	if err != nil {
 		return err
 	}
 	return a.exec(res, append([]string{"claude"}, args...))
+}
+
+// resolveOrBootstrap resolves a profile, creating a first one if none exist.
+//
+// Bootstrapping is confined to ErrNoSelection on an empty store: with zero
+// profiles there is no account to pick wrongly. Once a profile exists, an
+// unresolved run is still an error rather than a guess.
+func (a *app) resolveOrBootstrap() (profile.Resolution, error) {
+	res, err := a.store.Resolve(a.globals.profile, a.cfg, a.cwd)
+	if err == nil {
+		return res, nil
+	}
+	if !errors.Is(err, profile.ErrNoSelection) {
+		return profile.Resolution{}, err
+	}
+
+	empty, emptyErr := a.store.IsEmpty()
+	if emptyErr != nil {
+		return profile.Resolution{}, emptyErr
+	}
+	if !empty {
+		return profile.Resolution{}, err
+	}
+	return a.bootstrap()
+}
+
+// bootstrap creates the first profile and records it as default_profile, so
+// that a bare `ccc` keeps working after a second profile is added later.
+func (a *app) bootstrap() (profile.Resolution, error) {
+	name := profile.DefaultName
+	if err := a.store.Create(name); err != nil {
+		return profile.Resolution{}, err
+	}
+	if err := config.SetDefaultProfile(a.cfg.Root, name); err != nil {
+		return profile.Resolution{}, err
+	}
+	a.cfg.DefaultProfile = name
+
+	// The profile starts empty: ccc never copies credentials without being
+	// asked. Claude Code will prompt for login on first use.
+	fmt.Fprintf(os.Stderr,
+		"ccc: first run — created profile %q and set default_profile in %s/config.json\n"+
+			"ccc: it has no credentials yet; seed an existing config with `ccc profile create <name> --from ~/.claude`\n",
+		name, a.cfg.Root)
+
+	return profile.Resolution{Name: name, Source: profile.SourceBootstrap}, nil
 }
 
 // exec replaces the ccc process with the container runtime, so the TTY,
@@ -161,7 +208,7 @@ func (a *app) checkWorkdir() error {
 			return nil
 		}
 	}
-	return fmt.Errorf("working directory %s is not under any configured mount root (%s):\nadd it to mounts.roots in %s/config.toml",
+	return fmt.Errorf("working directory %s is not under any configured mount root (%s):\nadd it to mounts.roots in %s/config.json",
 		a.cwd, strings.Join(a.cfg.Mounts.Roots, ", "), a.cfg.Root)
 }
 
