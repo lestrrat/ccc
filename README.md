@@ -72,7 +72,7 @@ One profile = one account = one host directory = one container `$HOME` overlay.
 ccc profile create work              # empty profile
 ccc profile create work --from ~/.claude   # seed from an existing config
 ccc profile list                     # `*` marks default_profile
-ccc profile rm work                  # deletes credentials too
+ccc profile rm work                  # deletes credentials too (prompts; -f to skip)
 ```
 
 There is no `ccc login`. A profile with no credentials is just a fresh `~/.claude`, so Claude Code runs its own setup and prompts you — exactly as it would on the host. To re-authenticate an existing profile, pass its own command through:

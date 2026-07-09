@@ -227,11 +227,58 @@ func profileCreate(a *app, args []string) error {
 	return nil
 }
 
-func profileRemove(a *app, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: ccc profile rm <name>")
+// confirm prompts for a yes/no answer on the terminal.
+//
+// Without a TTY it refuses rather than assuming: a piped or scripted `rm` that
+// wants to skip the prompt must say so with --force, so the destructive default
+// is never "proceed silently".
+func confirm(prompt string) (bool, error) {
+	if !isTerminal(os.Stdin) {
+		return false, fmt.Errorf("%s\nrefusing without a terminal; pass --force to skip this prompt", prompt)
 	}
-	name := args[0]
+	fmt.Fprintf(os.Stderr, "%s [y/N] ", prompt)
+
+	var answer string
+	if _, err := fmt.Fscanln(os.Stdin, &answer); err != nil {
+		return false, nil // empty line or EOF: treat as no
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes", nil
+}
+
+func profileRemove(a *app, args []string) error {
+	var name string
+	var force bool
+	for _, arg := range args {
+		switch {
+		case arg == "--force" || arg == "-f":
+			force = true
+		case name == "":
+			name = arg
+		default:
+			return fmt.Errorf("profile rm: unexpected argument %q", arg)
+		}
+	}
+	if name == "" {
+		return fmt.Errorf("usage: ccc profile rm <name> [--force]")
+	}
+
+	// rm deletes credentials and all of the profile's state, irreversibly. A
+	// typo of an existing name would otherwise wipe it silently.
+	if !force {
+		if !a.store.Exists(name) {
+			return fmt.Errorf("%q: %w", name, profile.ErrNotExist)
+		}
+		ok, err := confirm(fmt.Sprintf("delete profile %q and its credentials?", name))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(os.Stderr, "aborted")
+			return nil
+		}
+	}
+
 	if err := a.store.Remove(name); err != nil {
 		return err
 	}

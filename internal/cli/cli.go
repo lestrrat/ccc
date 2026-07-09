@@ -297,7 +297,8 @@ commands:
   profile create <name>      create a profile
     --from <dir>             seed it from an existing ~/.claude
   profile list               list profiles ('*' marks default_profile)
-  profile rm <name>          delete a profile, credentials included
+  profile rm <name>          delete a profile, credentials included (prompts)
+    --force, -f              skip the confirmation prompt
   pin                        pin the newest Claude Code and build that image
     --to <version>           pin this version instead ("latest" is resolved
                              to a concrete version before being stored)
