@@ -64,6 +64,18 @@ func TestRootsInWorktree(t *testing.T) {
 	git(t, wt, "status", "-s")
 }
 
+// A repository path with a space (macOS "Application Support", say) must not
+// disable git awareness. Splitting git's output on whitespace would over-split
+// the path and fall back to mounting only cwd.
+func TestRootsRepoPathWithSpace(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "has space")
+	require.NoError(t, exec.Command("mkdir", "-p", base).Run())
+	git(t, base, "init", "-q")
+
+	dirs := workspace.Dirs(base)
+	require.Equal(t, []string{realpath(t, base)}, dirs, "the space must not break resolution")
+}
+
 func realpath(t *testing.T, p string) string {
 	t.Helper()
 	r, err := filepath.EvalSymlinks(p)

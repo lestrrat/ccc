@@ -43,8 +43,11 @@ func gitDirs(cwd string) (string, string, bool) {
 		return "", "", false
 	}
 
-	lines := strings.Fields(strings.TrimSpace(string(out)))
-	if len(lines) != 2 {
+	// Split on newlines, not whitespace: a repository path may contain spaces
+	// (e.g. macOS "Application Support"). strings.Fields would over-split such a
+	// path and silently disable worktree awareness.
+	lines := strings.Split(strings.Trim(string(out), "\n"), "\n")
+	if len(lines) != 2 || lines[0] == "" || lines[1] == "" {
 		return "", "", false
 	}
 	return filepath.Clean(lines[0]), filepath.Clean(lines[1]), true

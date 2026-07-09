@@ -53,6 +53,10 @@ type app struct {
 	cwd     string
 	// dirFile is the nearest .ccc.json, or nil. A per-checkout, per-user file.
 	dirFile *config.Dir
+	// dirFileErr defers a malformed .ccc.json: only commands that actually
+	// mount (a run, `check`) care, so `ccc version` must not fail because a
+	// broken file sits in an ancestor directory.
+	dirFileErr error
 }
 
 // invocation is a parsed command line.
@@ -191,18 +195,19 @@ func newApp(g globals) (*app, error) {
 		return nil, fmt.Errorf("failed to determine working directory: %w", err)
 	}
 
-	dirFile, _, _, err := config.FindDir(cwd, id.Home)
-	if err != nil {
-		return nil, err
-	}
+	// A malformed .ccc.json is deferred, not fatal here: commands that never
+	// mount (version, help, profile, pin) must work regardless of what sits in
+	// an ancestor directory.
+	dirFile, _, _, dirFileErr := config.FindDir(cwd, id.Home)
 
 	return &app{
-		globals: g,
-		cfg:     cfg,
-		store:   profile.NewStore(root, id.Home),
-		id:      id,
-		cwd:     cwd,
-		dirFile: dirFile,
+		globals:    g,
+		cfg:        cfg,
+		store:      profile.NewStore(root, id.Home),
+		id:         id,
+		cwd:        cwd,
+		dirFile:    dirFile,
+		dirFileErr: dirFileErr,
 	}, nil
 }
 

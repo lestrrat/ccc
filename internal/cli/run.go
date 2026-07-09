@@ -125,8 +125,19 @@ func (a *app) pendingClaudeUpgrade(name string) (string, string, error) {
 // simply not exist. Warn, keep the working image, carry on.
 func (a *app) ensureImage(rt container.Runtime, name string, want string, current string) (string, error) {
 	if want == "" {
-		b := a.builderWith(rt, current)
-		return b.Ensure()
+		tag, err := a.builderWith(rt, current).Ensure()
+		if err == nil || current == "" || current == config.DefaultClaudeVersion {
+			// No pin to blame: a "latest"/unpinned build that fails is a real
+			// problem (base image, network) and must surface, not be masked.
+			return tag, err
+		}
+		// current is a concrete pin whose image will not build. The pin lives in
+		// a container-writable file, so a bogus-but-valid version (e.g. 9.9.9)
+		// would otherwise brick the profile on every future run. Fall back to
+		// an unpinned session and say how to repair.
+		fmt.Fprintf(os.Stderr, "ccc: pinned Claude Code %s will not build (%s)\n", current, err)
+		fmt.Fprintf(os.Stderr, "ccc: repair with `ccc -p %s pin --to <version>`; starting on latest for now\n", name)
+		return a.builderWith(rt, config.DefaultClaudeVersion).Ensure()
 	}
 
 	fmt.Fprintf(os.Stderr, "ccc: Claude Code asked for %s (have %s); rebuilding\n", want, orLatest(current))
@@ -141,7 +152,7 @@ func (a *app) ensureImage(rt container.Runtime, name string, want string, curren
 
 	fmt.Fprintf(os.Stderr, "ccc: could not build Claude Code %s (%s)\n", want, err)
 	fmt.Fprintf(os.Stderr, "ccc: staying on %s\n", orLatest(current))
-	return a.builderWith(rt, current).Ensure()
+	return a.ensureImage(rt, name, "", current)
 }
 
 func orLatest(v string) string {
@@ -202,6 +213,12 @@ func (a *app) exec(res profile.Resolution, cmd []string) error {
 // checks drifts away from the code it claims to check, and then reports green
 // while the real path fails.
 func (a *app) preflight(name string) ([]container.Mount, error) {
+	// A malformed .ccc.json is deferred from newApp to here, because only a run
+	// consumes its `dirs`. This is the point that actually needs it.
+	if a.dirFileErr != nil {
+		return nil, a.dirFileErr
+	}
+
 	// The implicit workspace dir is the cwd when it is not in a repository.
 	// Refuse the dangerous ones before anything else looks at them.
 	for _, d := range workspace.Dirs(a.cwd) {

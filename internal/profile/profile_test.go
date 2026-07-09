@@ -108,6 +108,23 @@ func TestListAndRemove(t *testing.T) {
 	require.ErrorIs(t, s.Remove("alpha"), profile.ErrNotExist)
 }
 
+// Remove is the destructive op; an unvalidated name with `..` would make
+// os.RemoveAll escape profiles/ and delete arbitrary host directories.
+func TestRemoveRejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	s := profile.NewStore(root, home)
+
+	// A directory that must survive: a sibling of profiles/ under the ccc root.
+	victim := filepath.Join(root, "VICTIM")
+	require.NoError(t, os.MkdirAll(victim, 0o755))
+
+	require.ErrorContains(t, s.Remove("../VICTIM"), "invalid profile name")
+	require.DirExists(t, victim, "traversal must not delete it")
+
+	require.ErrorContains(t, s.Remove("../../etc"), "invalid profile name")
+}
+
 func TestListEmptyStore(t *testing.T) {
 	s := profile.NewStore(t.TempDir(), t.TempDir())
 	names, err := s.List()

