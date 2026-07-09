@@ -23,6 +23,34 @@ import (
 //go:embed Dockerfile
 var baseDockerfile []byte
 
+// ClaudeBin is where npm installs Claude Code in the image.
+//
+// ccc execs this absolute path rather than resolving "claude" on PATH: the
+// host's $HOME is mounted, and a login shell there sources ~/.profile, which
+// typically prepends ~/.local/bin — where a host-native Claude Code lives.
+const ClaudeBin = "/usr/local/bin/claude"
+
+// HostNativeBin is the host's native install location, shadowed inside the
+// container so nothing can reach the host's binary or self-update it.
+const HostNativeBin = ".local/bin/claude"
+
+// shim redirects any in-container lookup of the host's native claude to the
+// image's own binary.
+const shim = "#!/bin/sh\n# Written by ccc. Shadows the host's native Claude Code inside the container.\nexec " + ClaudeBin + " \"$@\"\n"
+
+// EnsureShim writes the shim into the ccc config root and returns its path.
+// Bind-mount sources must be host paths, so the shim cannot live in the image.
+func EnsureShim(root string) (string, error) {
+	path := filepath.Join(root, "shim", "claude")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("failed to create shim dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(shim), 0o755); err != nil {
+		return "", fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	return path, nil
+}
+
 // Builder produces and caches the ccc image for one host identity.
 type Builder struct {
 	rt  container.Runtime

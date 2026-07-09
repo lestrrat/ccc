@@ -23,7 +23,9 @@ func cmdClaude(a *app, args []string) error {
 	if err != nil {
 		return err
 	}
-	return a.exec(res, append([]string{"claude"}, args...))
+	// Absolute path, not "claude": PATH inside the container can reach the
+	// host's native install via the mounted $HOME.
+	return a.exec(res, append([]string{image.ClaudeBin}, args...))
 }
 
 // resolveOrBootstrap resolves a profile, creating a first one if none exist.
@@ -154,6 +156,19 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 			continue
 		}
 		out = append(out, container.Mount{Source: src, Target: src, ReadOnly: true})
+	}
+
+	// Shadow the host's native Claude Code. $HOME is mounted, and a login shell
+	// inside the container sources the host's ~/.profile, which prepends
+	// ~/.local/bin — so `claude` would otherwise resolve to the host's binary
+	// and, worse, self-update the host's installation from inside a container.
+	hostNative := filepath.Join(a.id.Home, image.HostNativeBin)
+	if _, err := os.Stat(hostNative); err == nil {
+		shim, err := image.EnsureShim(a.cfg.Root)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, container.Mount{Source: shim, Target: hostNative, ReadOnly: true})
 	}
 
 	ghConfig, err := a.ghConfig(name)

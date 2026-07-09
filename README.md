@@ -119,6 +119,9 @@ ccc help                 # same as ccc --help
 | `~/.gitconfig` | `$HOME/.gitconfig` | ro |
 | `$SSH_AUTH_SOCK` | same path | rw |
 | gh config dir | `$HOME/.config/gh` | ro |
+| `~/.config/ccc/shim/claude` | `$HOME/.local/bin/claude` | ro |
+
+The last row shadows a host-native Claude Code, if you have one; see [Which Claude Code runs](#which-claude-code-runs).
 
 The container user mirrors your UID, GID, username, and home directory, and roots are mounted at their **identical absolute paths**. Absolute paths therefore mean the same thing on both sides of the mount, and files written into your repositories are owned by you.
 
@@ -205,6 +208,24 @@ Built locally, cached under a content-addressed tag covering the Dockerfile and 
 Contents: Node, `@anthropic-ai/claude-code`, `git`, `gh`, `ripgrep`, `jq`, the Go toolchain, and `golangci-lint`.
 
 To add tooling without forking ccc, drop a `~/.config/ccc/Dockerfile.extra`; it is appended verbatim to the base image.
+
+### Which Claude Code runs
+
+The image's, at `/usr/local/bin/claude`. ccc execs that absolute path.
+
+This matters because `$HOME` is mounted, so the container can see a host-native Claude Code at `~/.local/bin/claude`. A login shell inside the container sources the host's `~/.profile`, which prepends `~/.local/bin` — without care, `claude` would resolve to the *host's* binary, and its auto-updater would rewrite the host's installation from inside a container.
+
+ccc shadows that path with a shim (`~/.config/ccc/shim/claude`) that execs the image's binary. The host's install is unreachable from inside, and untouched.
+
+### Upgrading Claude Code
+
+```sh
+ccc build --no-cache
+```
+
+Claude Code auto-updates itself on the host, but not inside ccc: the image installs it under root-owned `/usr/local`, and the container runs as you, so the updater cannot write there. The image tag hashes the *Dockerfile text*, not what the Dockerfile pulls in, so an unchanged Dockerfile keeps reusing whatever version it first installed.
+
+`ccc build --no-cache` is therefore the upgrade path — it also refreshes `golangci-lint` and the base image.
 
 ## Runtime
 
