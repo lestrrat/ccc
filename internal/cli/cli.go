@@ -1,0 +1,181 @@
+// Package cli implements ccc's command-line surface.
+//
+// `ccc` with no reserved subcommand starts Claude Code: the container is an
+// implementation detail, not something the user should have to name.
+package cli
+
+import (
+	"fmt"
+	"os"
+	"os/user"
+	"strconv"
+	"strings"
+
+	"github.com/lestrrat-go/ccc/internal/config"
+	"github.com/lestrrat-go/ccc/internal/container"
+	"github.com/lestrrat-go/ccc/internal/profile"
+)
+
+// Version is overridden at build time.
+var Version = "dev"
+
+// reserved first-arguments. Everything else is passed to `claude`; `--` forces
+// passthrough when a claude argument would collide with one of these.
+var reserved = map[string]func(*app, []string) error{
+	"login":   cmdLogin,
+	"profile": cmdProfile,
+	"build":   cmdBuild,
+	"doctor":  cmdDoctor,
+	"help":    cmdHelp,
+	"version": cmdVersion,
+}
+
+// globals are ccc's own flags, parsed before any subcommand.
+type globals struct {
+	profile string
+	runtime string
+}
+
+// app is the resolved runtime context shared by every command.
+type app struct {
+	globals globals
+	cfg     *config.Config
+	store   *profile.Store
+	id      container.Identity
+	cwd     string
+}
+
+// Run executes ccc. argv excludes the program name.
+func Run(argv []string) error {
+	g, rest, forced := parseGlobals(argv)
+
+	a, err := newApp(g)
+	if err != nil {
+		return err
+	}
+
+	if !forced && len(rest) > 0 {
+		if cmd, ok := reserved[rest[0]]; ok {
+			return cmd(a, rest[1:])
+		}
+	}
+	return cmdClaude(a, rest)
+}
+
+// parseGlobals consumes leading ccc flags. It returns the remaining arguments
+// and whether `--` forced everything after it to be passthrough.
+func parseGlobals(argv []string) (globals, []string, bool) {
+	var g globals
+	for len(argv) > 0 {
+		arg := argv[0]
+		switch {
+		case arg == "--":
+			return g, argv[1:], true
+		case arg == "--profile" || arg == "-p":
+			if len(argv) < 2 {
+				return g, argv, false
+			}
+			g.profile, argv = argv[1], argv[2:]
+		case strings.HasPrefix(arg, "--profile="):
+			g.profile, argv = strings.TrimPrefix(arg, "--profile="), argv[1:]
+		case arg == "--runtime":
+			if len(argv) < 2 {
+				return g, argv, false
+			}
+			g.runtime, argv = argv[1], argv[2:]
+		case strings.HasPrefix(arg, "--runtime="):
+			g.runtime, argv = strings.TrimPrefix(arg, "--runtime="), argv[1:]
+		default:
+			return g, argv, false
+		}
+	}
+	return g, nil, false
+}
+
+func newApp(g globals) (*app, error) {
+	root, err := config.DefaultRoot()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		return nil, err
+	}
+	if g.runtime != "" {
+		cfg.Runtime = g.runtime
+	}
+
+	id, err := identity()
+	if err != nil {
+		return nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine working directory: %w", err)
+	}
+
+	return &app{
+		globals: g,
+		cfg:     cfg,
+		store:   profile.NewStore(root, id.Home),
+		id:      id,
+		cwd:     cwd,
+	}, nil
+}
+
+// identity mirrors the invoking user into the container, so the container's
+// $HOME path equals the host's and absolute paths mean the same thing on both
+// sides of the mount.
+func identity() (container.Identity, error) {
+	u, err := user.Current()
+	if err != nil {
+		return container.Identity{}, fmt.Errorf("failed to determine current user: %w", err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return container.Identity{}, fmt.Errorf("non-numeric uid %q: %w", u.Uid, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return container.Identity{}, fmt.Errorf("non-numeric gid %q: %w", u.Gid, err)
+	}
+	return container.Identity{UID: uid, GID: gid, User: u.Username, Home: u.HomeDir}, nil
+}
+
+func (a *app) runtime() (container.Runtime, error) {
+	return container.Detect(a.cfg.Runtime)
+}
+
+func cmdVersion(_ *app, _ []string) error {
+	fmt.Println("ccc " + Version)
+	return nil
+}
+
+func cmdHelp(_ *app, _ []string) error {
+	fmt.Print(usage)
+	return nil
+}
+
+const usage = `ccc — Claude Code Contained
+
+Run Claude Code in a container so ~/.claude can be swapped per account.
+
+usage:
+  ccc [--profile <name>] [claude args...]   start Claude Code
+  ccc -- <claude args...>                   pass everything through verbatim
+
+commands:
+  login <profile>            authenticate a profile (interactive)
+  profile create <name>      create a profile
+    --from <dir>             seed it from an existing ~/.claude
+  profile list               list profiles
+  profile rm <name>          delete a profile and its credentials
+  build [--no-cache]         rebuild the container image
+  doctor                     check runtime, image, mounts, profile
+  version                    print version
+
+profile resolution, first match wins:
+  1. --profile <name>
+  2. .ccc.toml in the current directory or an ancestor
+  3. default_profile in ~/.config/ccc/config.toml
+`
