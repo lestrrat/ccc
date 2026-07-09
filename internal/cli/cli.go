@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -193,6 +194,13 @@ func newApp(g globals) (*app, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine working directory: %w", err)
+	}
+	// Resolve symlinks so cwd agrees with git's physical --show-toplevel. Without
+	// this, a repo reached through a symlinked ancestor (~/work -> /mnt/work)
+	// makes underRoot(cwd, gitTop) false and ccc refuses to run inside its own
+	// repo. The resolved path is also what actually gets mounted.
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = resolved
 	}
 
 	// A malformed .ccc.json is deferred, not fatal here: commands that never

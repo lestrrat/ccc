@@ -1,11 +1,38 @@
 package cli
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
+	"github.com/lestrrat-go/ccc/internal/config"
 	"github.com/lestrrat-go/ccc/internal/container"
 	"github.com/stretchr/testify/require"
 )
+
+// A repo reached through a symlinked ancestor must not make ccc refuse to run
+// inside its own repo: git resolves symlinks (physical path), os.Getwd does not
+// (logical), and an unresolved cwd is not "under" the git toplevel. newApp
+// resolves cwd with EvalSymlinks; this checks the resulting invariant holds.
+func TestSymlinkedCwdIsUnderRepo(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	require.NoError(t, os.MkdirAll(real, 0o755))
+	require.NoError(t, exec.Command("git", "-C", real, "init", "-q").Run())
+	require.NoError(t, os.Symlink("real", filepath.Join(base, "link")))
+
+	logical := filepath.Join(base, "link")
+	resolved, err := filepath.EvalSymlinks(logical)
+	require.NoError(t, err)
+
+	a := &app{cwd: resolved, cfg: &config.Config{}}
+	require.NoError(t, a.checkWorkdir(), "resolved cwd must be inside the repo")
+
+	// Without resolution, the logical path is not under the physical toplevel.
+	a.cwd = logical
+	require.Error(t, a.checkWorkdir(), "the bug this guards against")
+}
 
 // Outside a git repository the implicit workspace dir is the cwd. `ccc` run
 // from $HOME would otherwise mount the whole home read-write — the exposure the
