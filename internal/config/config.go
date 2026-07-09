@@ -283,11 +283,10 @@ func (c *Config) applyDefaults() error {
 		c.Image.ExtraDockerfile = p
 	}
 
-	if c.Image.ClaudeVersion != "" {
-		if err := ValidateClaudeVersion(c.Image.ClaudeVersion); err != nil {
-			return err
-		}
-	}
+	// claude_version is NOT validated here. Load runs for every command, so a
+	// malformed global pin would otherwise brick `version`, `help`, and the very
+	// `pin` that repairs it. It is validated where consumed (a.claudeVersion),
+	// exactly as the per-profile pin is.
 	return nil
 }
 

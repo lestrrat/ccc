@@ -250,17 +250,30 @@ func (a *app) runtime() (container.Runtime, error) {
 // Store.ClaudeVersion validates it. An invalid pin propagates as an error
 // rather than reaching a build arg.
 func (a *app) claudeVersion(name string) (string, error) {
-	if name == "" {
-		return a.cfg.Image.ClaudeVersion, nil
+	if name != "" {
+		v, err := a.store.ClaudeVersion(name)
+		if err != nil {
+			return "", err
+		}
+		if v != "" {
+			return v, nil
+		}
 	}
-	v, err := a.store.ClaudeVersion(name)
-	if err != nil {
-		return "", err
+	return a.globalPin()
+}
+
+// globalPin returns the validated global image.claude_version. Load no longer
+// validates it (that would brick every command on a malformed value), so it is
+// checked here, at point of use, with a hint that names the global scope.
+func (a *app) globalPin() (string, error) {
+	v := a.cfg.Image.ClaudeVersion
+	if v == "" {
+		return "", nil
 	}
-	if v != "" {
-		return v, nil
+	if err := config.ValidateClaudeVersion(v); err != nil {
+		return "", fmt.Errorf("%s/%s: %w\nrepair it with `ccc pin --to <version>`", a.cfg.Root, config.FileName, err)
 	}
-	return a.cfg.Image.ClaudeVersion, nil
+	return v, nil
 }
 
 // builder constructs an image Builder for the given profile ("" for none).

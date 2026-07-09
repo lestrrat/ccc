@@ -84,6 +84,18 @@ func TestRelativeDirsRejected(t *testing.T) {
 	require.ErrorContains(t, err, "must be absolute or start with ~/")
 }
 
+// Load must NOT validate claude_version: it runs for every command, so a
+// malformed global pin would otherwise brick `version`, `help`, and the `pin`
+// that repairs it. Validation is deferred to the point of use.
+func TestLoadToleratesMalformedGlobalPin(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, config.FileName), `{"image":{"claude_version":"beta"}}`)
+
+	cfg, err := config.Load(root)
+	require.NoError(t, err, "a malformed pin must not fail load")
+	require.Equal(t, "beta", cfg.Image.ClaudeVersion, "preserved verbatim for repair")
+}
+
 func TestSetClaudeVersion(t *testing.T) {
 	t.Run("sets image.claude_version and preserves known keys", func(t *testing.T) {
 		root := t.TempDir()

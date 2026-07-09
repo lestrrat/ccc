@@ -136,7 +136,7 @@ func (a *app) ensureImage(rt container.Runtime, name string, want string, curren
 		// would otherwise brick the profile on every future run. Fall back to
 		// an unpinned session and say how to repair.
 		fmt.Fprintf(os.Stderr, "ccc: pinned Claude Code %s will not build (%s)\n", current, err)
-		fmt.Fprintf(os.Stderr, "ccc: repair with `ccc -p %s pin --to <version>`; starting on latest for now\n", name)
+		fmt.Fprintf(os.Stderr, "ccc: repair with `%s`; starting on latest for now\n", a.pinRepairCmd(name))
 		return a.builderWith(rt, config.DefaultClaudeVersion).Ensure()
 	}
 
@@ -153,6 +153,17 @@ func (a *app) ensureImage(rt container.Runtime, name string, want string, curren
 	fmt.Fprintf(os.Stderr, "ccc: could not build Claude Code %s (%s)\n", want, err)
 	fmt.Fprintf(os.Stderr, "ccc: staying on %s\n", orLatest(current))
 	return a.ensureImage(rt, name, "", current)
+}
+
+// pinRepairCmd names the command that repairs whichever pin is in force: the
+// profile's own if it has one, otherwise the global config.json pin.
+func (a *app) pinRepairCmd(name string) string {
+	if name != "" {
+		if v, _ := a.store.ClaudeVersion(name); v != "" {
+			return fmt.Sprintf("ccc -p %s pin --to <version>", name)
+		}
+	}
+	return "ccc pin --to <version>"
 }
 
 func orLatest(v string) string {
