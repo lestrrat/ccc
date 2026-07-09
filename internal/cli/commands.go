@@ -15,8 +15,9 @@ import (
 // declared as the last ARG in the Dockerfile, only the final layer is
 // invalidated: this costs one npm install, not a full image rebuild.
 //
-// Without --profile the pin is global; with it, the pin lives in that profile's
-// profile.json, so profiles can run different Claude Code versions.
+// Without --profile it writes the global default (image.default_claude_version
+// in config.json). With --profile it writes that profile's pin (the
+// .ccc-claude-version file), so profiles can run different Claude Code versions.
 func cmdPin(a *app, args []string) error {
 	var to string
 	var noCache bool
@@ -46,7 +47,7 @@ func cmdPin(a *app, args []string) error {
 	}
 
 	to, err := resolveTarget(to, func() (string, error) {
-		fmt.Fprintf(os.Stderr, "ccc: resolving %s@%s from the npm registry\n", npm.ClaudeCode, config.DefaultClaudeVersion)
+		fmt.Fprintf(os.Stderr, "ccc: resolving %s@%s from the npm registry\n", npm.ClaudeCode, config.LatestClaudeVersion)
 		return npm.Latest(context.Background(), npm.ClaudeCode)
 	})
 	if err != nil {
@@ -114,7 +115,7 @@ func cmdPin(a *app, args []string) error {
 // empty --to and an explicit `--to latest` therefore resolve through the
 // registry, which is the one place a network call is expected.
 func resolveTarget(to string, latest func() (string, error)) (string, error) {
-	if to == "" || to == config.DefaultClaudeVersion {
+	if to == "" || to == config.LatestClaudeVersion {
 		v, err := latest()
 		if err != nil {
 			return "", err
@@ -124,7 +125,7 @@ func resolveTarget(to string, latest func() (string, error)) (string, error) {
 	if err := config.ValidateClaudeVersion(to); err != nil {
 		return "", err
 	}
-	if to == config.DefaultClaudeVersion {
+	if to == config.LatestClaudeVersion {
 		return "", fmt.Errorf("registry resolved to %q, not a concrete version", to)
 	}
 	return to, nil
@@ -134,7 +135,7 @@ func resolveTarget(to string, latest func() (string, error)) (string, error) {
 // back to the global pin. "" means nothing is pinned there.
 func (a *app) pinnedAt(scope string) (string, error) {
 	if scope == "" {
-		return a.cfg.Image.ClaudeVersion, nil
+		return a.cfg.Image.DefaultClaudeVersion, nil
 	}
 	return a.store.ClaudeVersion(scope)
 }
@@ -142,10 +143,10 @@ func (a *app) pinnedAt(scope string) (string, error) {
 // pin records the version globally, or in a profile when scope is non-empty.
 func (a *app) pin(scope string, version string) error {
 	if scope == "" {
-		if err := config.SetClaudeVersion(a.cfg.Root, version); err != nil {
+		if err := config.SetDefaultClaudeVersion(a.cfg.Root, version); err != nil {
 			return err
 		}
-		a.cfg.Image.ClaudeVersion = version
+		a.cfg.Image.DefaultClaudeVersion = version
 		return nil
 	}
 	return a.store.SetClaudeVersion(scope, version)

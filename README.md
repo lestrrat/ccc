@@ -283,7 +283,7 @@ A profile *is* a `~/.claude`, so permission behavior belongs where Claude Code a
   "default_profile": "personal",
   "image": {
     "extra_dockerfile": "Dockerfile.extra",
-    "claude_version": "2.1.205"
+    "default_claude_version": "2.1.205"
   },
   "mounts": {
     "dirs": ["~/dev/src/github.com/jwx-go/mlkem"],
@@ -413,15 +413,15 @@ ccc pin --no-cache                   # latest Claude Code + rebuild every layer
 ccc pin --no-cache --to 2.1.205      # keep this version, rebuild every layer
 ```
 
-#### Where the pin lives
+#### Pin vs. default
 
-Per-profile, in the profile's own Claude Code directory:
+These are two different things:
 
-```
-~/.config/ccc/profiles/work/claude/.ccc-claude-version    # e.g. "2.1.205"
-```
+- A **pin** is per-profile, in the profile's own Claude Code directory:
+  `~/.config/ccc/profiles/work/claude/.ccc-claude-version` (e.g. `2.1.205`). This profile runs exactly this version.
+- A **default** is global, `image.default_claude_version` in `config.json`. A profile with no pin of its own starts here — but it is only a starting point. If Claude Code inside that profile requests a newer version, ccc writes the profile a pin of its own, and it diverges upward from the default. The default does not hold a profile down.
 
-Falling back to `image.claude_version` in `config.json` when a profile has no pin. So profiles can run different Claude Code versions, and a profile carries its version with it.
+`ccc pin` writes the default; `ccc -p work pin` writes that profile's pin. So profiles can run different versions, and each carries its own.
 
 That file is inside a directory mounted **read-write** into the container, so the contained process can write it. Its contents become a build arg that is interpolated into a `RUN npm install -g pkg@${CLAUDE_VERSION}` executed as root. ccc therefore validates it on read: it must be `latest` or a plain semver. Anything else — `2.1.205; rm -rf /`, backticks, `$(...)`, newlines — is a hard error, never a silently ignored value and never a shell string.
 

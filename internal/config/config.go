@@ -38,15 +38,17 @@ type Image struct {
 	// Relative paths resolve against the ccc config directory.
 	ExtraDockerfile string `json:"extra_dockerfile,omitempty"`
 
-	// ClaudeVersion pins the Claude Code npm version. Empty means "latest",
-	// resolved once at build time and never revisited: ccc does not check the
-	// registry on a normal run. `ccc pin` records a concrete version here,
-	// which changes the image tag and triggers a one-layer rebuild.
-	ClaudeVersion string `json:"claude_version,omitempty"`
+	// DefaultClaudeVersion is the Claude Code version a profile uses when it has
+	// no pin of its own. It is a DEFAULT, not a pin: a profile that inherits it
+	// still tracks its own updates and can diverge upward. The true pin is the
+	// per-profile .ccc-claude-version file. Empty means npm's "latest".
+	DefaultClaudeVersion string `json:"default_claude_version,omitempty"`
 }
 
-// DefaultClaudeVersion is the npm dist-tag used when nothing is pinned.
-const DefaultClaudeVersion = "latest"
+// LatestClaudeVersion is npm's "latest" dist-tag: the value that means "not
+// concretely pinned". Distinct from Image.DefaultClaudeVersion, the configured
+// default a profile falls back to.
+const LatestClaudeVersion = "latest"
 
 // Mounts controls what host state the container sees.
 type Mounts struct {
@@ -121,7 +123,7 @@ func IsNewerClaudeVersion(a string, b string) bool {
 	if !ok {
 		return false
 	}
-	if b == "" || b == DefaultClaudeVersion {
+	if b == "" || b == LatestClaudeVersion {
 		return true
 	}
 	bv, ok := parseSemver(b)
@@ -336,15 +338,15 @@ func Create(root string, name string) (bool, error) {
 	return true, nil
 }
 
-// SetClaudeVersion records image.claude_version in config.json, preserving
-// every other setting. Unlike Create, this is an explicit user action
-// (`ccc pin`), so an existing config is updated rather than left alone.
+// SetDefaultClaudeVersion records image.default_claude_version in config.json,
+// preserving every other setting. Unlike Create, this is an explicit user action
+// (a global `ccc pin`), so an existing config is updated rather than left alone.
 //
 // The file is merged as a raw map, not round-tripped through Config: a key ccc
 // does not model (a newer option, a typo worth keeping) must survive the write.
 // Decoding into a struct and re-marshalling would silently drop it. This also
 // avoids freezing in the derived values Load() materializes.
-func SetClaudeVersion(root string, version string) error {
+func SetDefaultClaudeVersion(root string, version string) error {
 	if err := ValidateClaudeVersion(version); err != nil {
 		return err
 	}
@@ -359,7 +361,7 @@ func SetClaudeVersion(root string, version string) error {
 	if image == nil {
 		image = map[string]any{}
 	}
-	image["claude_version"] = version
+	image["default_claude_version"] = version
 	doc["image"] = image
 
 	return writeJSON(path, doc)

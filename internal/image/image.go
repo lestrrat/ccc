@@ -114,7 +114,7 @@ func (b *Builder) claudeVersion() string {
 	if b.version != "" {
 		return b.version
 	}
-	return config.DefaultClaudeVersion
+	return config.LatestClaudeVersion
 }
 
 // Tag is the content-addressed image tag. It covers the Dockerfile and the

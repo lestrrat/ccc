@@ -85,19 +85,19 @@ func TestRelativeDirsRejected(t *testing.T) {
 	require.ErrorContains(t, err, "must be absolute or start with ~/")
 }
 
-// Load must NOT validate claude_version: it runs for every command, so a
+// Load must NOT validate default_claude_version: it runs for every command, so a
 // malformed global pin would otherwise brick `version`, `help`, and the `pin`
 // that repairs it. Validation is deferred to the point of use.
 func TestLoadToleratesMalformedGlobalPin(t *testing.T) {
 	root := t.TempDir()
-	write(t, filepath.Join(root, config.FileName), `{"image":{"claude_version":"beta"}}`)
+	write(t, filepath.Join(root, config.FileName), `{"image":{"default_claude_version":"beta"}}`)
 
 	cfg, err := config.Load(root)
 	require.NoError(t, err, "a malformed pin must not fail load")
-	require.Equal(t, "beta", cfg.Image.ClaudeVersion, "preserved verbatim for repair")
+	require.Equal(t, "beta", cfg.Image.DefaultClaudeVersion, "preserved verbatim for repair")
 }
 
-// Concurrent SetClaudeVersion (two `ccc pin` at once, a bootstrap racing a pin)
+// Concurrent SetDefaultClaudeVersion (two `ccc pin` at once, a bootstrap racing a pin)
 // must never leave a corrupt config or a stray temp file: unique temps + rename.
 func TestConcurrentWritesStayValid(t *testing.T) {
 	root := t.TempDir()
@@ -107,14 +107,14 @@ func TestConcurrentWritesStayValid(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = config.SetClaudeVersion(root, "2.1.205")
+			_ = config.SetDefaultClaudeVersion(root, "2.1.205")
 		}()
 	}
 	wg.Wait()
 
 	cfg, err := config.Load(root)
 	require.NoError(t, err, "config must remain parseable")
-	require.Equal(t, "2.1.205", cfg.Image.ClaudeVersion)
+	require.Equal(t, "2.1.205", cfg.Image.DefaultClaudeVersion)
 
 	entries, err := os.ReadDir(root)
 	require.NoError(t, err)
@@ -122,17 +122,17 @@ func TestConcurrentWritesStayValid(t *testing.T) {
 	require.Equal(t, config.FileName, entries[0].Name())
 }
 
-func TestSetClaudeVersion(t *testing.T) {
-	t.Run("sets image.claude_version and preserves known keys", func(t *testing.T) {
+func TestSetDefaultClaudeVersion(t *testing.T) {
+	t.Run("sets image.default_claude_version and preserves known keys", func(t *testing.T) {
 		root := t.TempDir()
 		write(t, filepath.Join(root, config.FileName),
 			`{"runtime":"docker","image":{"extra_dockerfile":"Dockerfile.extra"}}`)
 
-		require.NoError(t, config.SetClaudeVersion(root, "2.1.205"))
+		require.NoError(t, config.SetDefaultClaudeVersion(root, "2.1.205"))
 
 		cfg, err := config.Load(root)
 		require.NoError(t, err)
-		require.Equal(t, "2.1.205", cfg.Image.ClaudeVersion)
+		require.Equal(t, "2.1.205", cfg.Image.DefaultClaudeVersion)
 		require.Equal(t, "docker", cfg.Runtime)
 		require.Contains(t, cfg.Image.ExtraDockerfile, "Dockerfile.extra", "sibling image key kept")
 	})
@@ -144,7 +144,7 @@ func TestSetClaudeVersion(t *testing.T) {
 		write(t, filepath.Join(root, config.FileName),
 			`{"future_toplevel":42,"image":{"future_image_key":"keep me"}}`)
 
-		require.NoError(t, config.SetClaudeVersion(root, "2.1.205"))
+		require.NoError(t, config.SetDefaultClaudeVersion(root, "2.1.205"))
 
 		b, err := os.ReadFile(filepath.Join(root, config.FileName))
 		require.NoError(t, err)
@@ -154,20 +154,20 @@ func TestSetClaudeVersion(t *testing.T) {
 		require.EqualValues(t, 42, raw["future_toplevel"])
 		image := raw["image"].(map[string]any)
 		require.Equal(t, "keep me", image["future_image_key"])
-		require.Equal(t, "2.1.205", image["claude_version"])
+		require.Equal(t, "2.1.205", image["default_claude_version"])
 	})
 
 	t.Run("creates the file when absent", func(t *testing.T) {
 		root := t.TempDir()
-		require.NoError(t, config.SetClaudeVersion(root, "2.1.205"))
+		require.NoError(t, config.SetDefaultClaudeVersion(root, "2.1.205"))
 
 		cfg, err := config.Load(root)
 		require.NoError(t, err)
-		require.Equal(t, "2.1.205", cfg.Image.ClaudeVersion)
+		require.Equal(t, "2.1.205", cfg.Image.DefaultClaudeVersion)
 	})
 
 	t.Run("rejects a prerelease", func(t *testing.T) {
-		require.ErrorContains(t, config.SetClaudeVersion(t.TempDir(), "2.1.205-beta"), "no prereleases")
+		require.ErrorContains(t, config.SetDefaultClaudeVersion(t.TempDir(), "2.1.205-beta"), "no prereleases")
 	})
 }
 

@@ -262,11 +262,11 @@ func (a *app) claudeVersion(name string) (string, error) {
 	return a.globalPin()
 }
 
-// globalPin returns the validated global image.claude_version. Load no longer
-// validates it (that would brick every command on a malformed value), so it is
-// checked here, at point of use, with a hint that names the global scope.
+// globalPin returns the validated global image.default_claude_version. Load no
+// longer validates it (that would brick every command on a malformed value), so
+// it is checked here, at point of use, with a hint that names the global scope.
 func (a *app) globalPin() (string, error) {
-	v := a.cfg.Image.ClaudeVersion
+	v := a.cfg.Image.DefaultClaudeVersion
 	if v == "" {
 		return "", nil
 	}

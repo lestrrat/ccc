@@ -126,7 +126,7 @@ func (a *app) pendingClaudeUpgrade(name string) (string, string, error) {
 func (a *app) ensureImage(rt container.Runtime, name string, want string, current string) (string, error) {
 	if want == "" {
 		tag, err := a.builderWith(rt, current).Ensure()
-		if err == nil || current == "" || current == config.DefaultClaudeVersion {
+		if err == nil || current == "" || current == config.LatestClaudeVersion {
 			// No pin to blame: a "latest"/unpinned build that fails is a real
 			// problem (base image, network) and must surface, not be masked.
 			return tag, err
@@ -137,7 +137,7 @@ func (a *app) ensureImage(rt container.Runtime, name string, want string, curren
 		// an unpinned session and say how to repair.
 		fmt.Fprintf(os.Stderr, "ccc: pinned Claude Code %s will not build (%s)\n", current, err)
 		fmt.Fprintf(os.Stderr, "ccc: repair with `%s`; starting on latest for now\n", a.pinRepairCmd(name))
-		return a.builderWith(rt, config.DefaultClaudeVersion).Ensure()
+		return a.builderWith(rt, config.LatestClaudeVersion).Ensure()
 	}
 
 	fmt.Fprintf(os.Stderr, "ccc: Claude Code asked for %s (have %s); rebuilding\n", want, orLatest(current))
@@ -168,7 +168,7 @@ func (a *app) pinRepairCmd(name string) string {
 
 func orLatest(v string) string {
 	if v == "" {
-		return config.DefaultClaudeVersion
+		return config.LatestClaudeVersion
 	}
 	return v
 }

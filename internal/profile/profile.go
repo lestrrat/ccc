@@ -147,7 +147,7 @@ func (s *Store) RequestedClaudeVersion(name string) (string, error) {
 	if err := config.ValidateClaudeVersion(r.VersionTo); err != nil {
 		return "", nil
 	}
-	if r.VersionTo == config.DefaultClaudeVersion {
+	if r.VersionTo == config.LatestClaudeVersion {
 		return "", nil // a dist-tag is not a pin
 	}
 	return r.VersionTo, nil
