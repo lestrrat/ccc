@@ -16,7 +16,10 @@ import (
 // the real mounts and identity. That last step is the only thing that catches
 // a malformed argument vector — a wrong flag order fails at `podman run`, and
 // nothing short of running it will tell you.
-func cmdCheck(a *app, _ []string) error {
+func cmdCheck(a *app, args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("check: unexpected argument %q", args[0])
+	}
 	var failed bool
 	step := func(label string, err error, detail string) {
 		if err != nil {

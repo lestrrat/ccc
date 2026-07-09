@@ -157,7 +157,7 @@ func cmdProfile(a *app, args []string) error {
 	}
 	switch args[0] {
 	case "list":
-		return profileList(a)
+		return profileList(a, args[1:])
 	case "create":
 		return profileCreate(a, args[1:])
 	case "rm", "remove":
@@ -167,7 +167,10 @@ func cmdProfile(a *app, args []string) error {
 	}
 }
 
-func profileList(a *app) error {
+func profileList(a *app, args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("profile list: unexpected argument %q", args[0])
+	}
 	names, err := a.store.List()
 	if err != nil {
 		return err
