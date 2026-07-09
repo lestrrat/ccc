@@ -34,6 +34,7 @@ var reserved = map[string]func(*app, []string) error{
 type globals struct {
 	profile string
 	runtime string
+	help    bool
 }
 
 // app is the resolved runtime context shared by every command.
@@ -48,6 +49,12 @@ type app struct {
 // Run executes ccc. argv excludes the program name.
 func Run(argv []string) error {
 	g, rest, forced := parseGlobals(argv)
+
+	// Answered before any config or runtime work, so `ccc --help` still works
+	// on a machine with no config, no profiles, and no container runtime.
+	if g.help {
+		return cmdHelp(nil, nil)
+	}
 
 	a, err := newApp(g)
 	if err != nil {
@@ -71,6 +78,9 @@ func parseGlobals(argv []string) (globals, []string, bool) {
 		switch {
 		case arg == "--":
 			return g, argv[1:], true
+		case arg == "--help" || arg == "-h":
+			g.help = true
+			return g, argv[1:], false
 		case arg == "--profile" || arg == "-p":
 			if len(argv) < 2 {
 				return g, argv, false
@@ -161,18 +171,35 @@ const usage = `ccc — Claude Code Contained
 Run Claude Code in a container so ~/.claude can be swapped per account.
 
 usage:
-  ccc [--profile <name>] [claude args...]   start Claude Code
-  ccc -- <claude args...>                   pass everything through verbatim
+  ccc [flags] [claude args...]   start Claude Code in the resolved profile
+  ccc <command> [args...]        run a ccc command (see below)
+  ccc -- <claude args...>        pass everything through to claude verbatim
 
 commands:
-  login <profile>            authenticate a profile (interactive)
+  login <profile>            authenticate a profile (runs ` + "`claude auth login`" + `)
   profile create <name>      create a profile
     --from <dir>             seed it from an existing ~/.claude
-  profile list               list profiles
+  profile list               list profiles ('*' marks default_profile)
   profile rm <name>          delete a profile and its credentials
   build [--no-cache]         rebuild the container image
   doctor                     check runtime, image, mounts, profile
   version                    print version
+  help                       print this help
+
+flags:
+  -p, --profile <name>       profile to run as
+      --runtime <name>       podman | docker | auto
+  -h, --help                 print this help
+
+examples:
+  ccc                        start Claude Code
+  ccc --resume               start Claude Code with --resume
+  ccc -p work --resume       ... as the "work" profile
+  ccc -- --help              claude's help, not ccc's
+  ccc -- doctor              ` + "`claude doctor`" + `, not ` + "`ccc doctor`" + `
+
+Command names above are reserved: they are consumed by ccc, not passed to
+claude. Use -- to force passthrough when a claude argument collides.
 
 profile resolution, first match wins:
   1. --profile <name>

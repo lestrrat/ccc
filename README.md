@@ -75,16 +75,19 @@ Otherwise ccc errors and lists the available profiles. It never guesses — a wr
 ccc                                    # claude
 ccc --resume                           # claude --resume
 ccc -p work --resume                   # profile "work"
+ccc --help                             # ccc's help
+ccc -- --help                          # claude's help
 ccc -- doctor                          # `claude doctor`, not `ccc doctor`
 ```
 
-`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `login`, `profile`, `build`, `doctor`, `help`, `version`.
+`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `login`, `profile`, `build`, `doctor`, `help`, `version`, `--help`, `-h`, `--profile`, `-p`, `--runtime`.
 
 Other commands:
 
 ```sh
 ccc build [--no-cache]   # rebuild the image
 ccc doctor               # runtime, image, mounts, resolved profile
+ccc help                 # same as ccc --help
 ```
 
 ## What the container sees

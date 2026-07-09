@@ -69,6 +69,30 @@ func TestParseGlobals(t *testing.T) {
 		require.False(t, forced)
 	})
 
+	t.Run("--help is ccc's help", func(t *testing.T) {
+		g, _, forced := parseGlobals([]string{"--help"})
+		require.True(t, g.help)
+		require.False(t, forced)
+	})
+
+	t.Run("-h is ccc's help", func(t *testing.T) {
+		g, _, _ := parseGlobals([]string{"-h"})
+		require.True(t, g.help)
+	})
+
+	t.Run("double dash reaches claude's help, not ccc's", func(t *testing.T) {
+		g, rest, forced := parseGlobals([]string{"--", "--help"})
+		require.False(t, g.help, "`ccc -- --help` must not print ccc's help")
+		require.Equal(t, []string{"--help"}, rest)
+		require.True(t, forced)
+	})
+
+	t.Run("help flag after globals", func(t *testing.T) {
+		g, _, _ := parseGlobals([]string{"--profile", "work", "--help"})
+		require.True(t, g.help)
+		require.Equal(t, "work", g.profile)
+	})
+
 	t.Run("dangling flag value does not panic", func(t *testing.T) {
 		g, rest, _ := parseGlobals([]string{"--profile"})
 		require.Empty(t, g.profile)

@@ -68,7 +68,7 @@ func (s *Store) resolveName(flag string, cfg *config.Config, cwd string) (Resolu
 		return Resolution{Name: cfg.DefaultProfile, Source: SourceDefault}, nil
 	}
 
-	return Resolution{}, fmt.Errorf("no profile selected: pass --profile, add a %s, or set default_profile\n%s",
+	return Resolution{}, fmt.Errorf("no profile selected: pass --profile, add a %s, or set default_profile\n%s\nrun `ccc --help` for usage",
 		config.DirConfigName, s.available())
 }
 
