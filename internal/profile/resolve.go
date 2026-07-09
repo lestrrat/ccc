@@ -52,6 +52,11 @@ func (s *Store) Resolve(flag string, cfg *config.Config, cwd string) (Resolution
 		return Resolution{}, err
 	}
 	if err := ValidateName(res.Name); err != nil {
+		// ccc's -p is --profile; claude's -p is --print. A profile name that
+		// looks like a prompt is almost always that confusion.
+		if res.Source == SourceFlag {
+			return Resolution{}, fmt.Errorf("%w\nclaude's -p (--print) goes after --:\n  ccc -- -p %q", err, res.Name)
+		}
 		return Resolution{}, err
 	}
 	if !s.Exists(res.Name) {

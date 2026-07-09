@@ -109,16 +109,26 @@ ccc profile create default --from ~/.claude
 
 ```sh
 ccc                                    # claude
-ccc --resume                           # claude --resume
-ccc -p work --resume                   # profile "work"
+ccc -- --resume                        # claude --resume
+ccc -p work -- --resume                # ... as profile "work"
+ccc -- -p "explain this"               # claude's --print
+ccc -- doctor                          # `claude doctor`
 ccc --help                             # ccc's help
 ccc -- --help                          # claude's help
-ccc doctor                             # `claude doctor` — ccc no longer reserves it
 ```
 
-`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `profile`, `pin`, `check`, `help`, `version`, `--help`, `-h`, `--profile`, `-p`, `--runtime`.
+**Everything before `--` belongs to ccc; everything after goes to claude verbatim.** The split is structural, not best-effort: an argument ccc does not recognize is an error, never a guess.
 
-None of those is a Claude Code subcommand, so `ccc doctor`, `ccc update`, `ccc install`, and `ccc mcp` all reach claude without `--`. Earlier names `doctor` and `upgrade` collided with `claude doctor` and `claude update|upgrade`; they were renamed for that reason.
+That matters because the two share a flag namespace. `-p` is `--profile` in ccc and `--print` in Claude Code, so a permissive parser would swallow `ccc -p "explain this"` as a profile name. And every flag Claude Code adds would be a new collision. With a strict split, neither can shadow the other, now or later.
+
+The cost is two characters on the common path. In exchange, ccc's flags are `-p/--profile`, `--runtime`, `-h/--help`, its commands are `profile`, `pin`, `check`, `help`, `version`, and nothing else before `--` is accepted:
+
+```
+$ ccc --resume
+ccc: unknown flag "--resume"
+ccc's own flags precede --; claude's go after it:
+  ccc -- --resume
+```
 
 Other commands:
 

