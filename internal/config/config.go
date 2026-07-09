@@ -173,24 +173,24 @@ func (c *Config) applyDefaults() error {
 	return nil
 }
 
-// SetDefaultProfile records default_profile in config.json, preserving every
-// other setting. No-op when default_profile is already set.
-func SetDefaultProfile(root string, name string) error {
+// Create writes a config.json naming name as default_profile. It reports
+// whether it wrote one: an existing config is never modified, so ccc cannot
+// clobber or reorder settings a user hand-wrote.
+func Create(root string, name string) (bool, error) {
 	path := filepath.Join(root, FileName)
 
-	// Re-read raw rather than reusing a loaded Config: applyDefaults()
-	// materializes derived values (mount roots, gh_config) that must not be
-	// frozen into the file as if the user had written them.
-	var raw Config
-	if err := readJSON(path, &raw); err != nil {
-		return err
-	}
-	if raw.DefaultProfile != "" {
-		return nil
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("failed to stat %s: %w", path, err)
 	}
 
-	raw.DefaultProfile = name
-	return writeJSON(path, &raw)
+	// Only default_profile is written. Derived values that Load() materializes
+	// (mount roots, gh_config) must not be frozen in as if the user chose them.
+	if err := writeJSON(path, &Config{DefaultProfile: name}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // LoadProfile reads profiles/<name>/profile.json. A missing file yields a

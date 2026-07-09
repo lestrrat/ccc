@@ -72,36 +72,22 @@ func TestCCCRuntimeEnvOverrides(t *testing.T) {
 	require.Equal(t, "docker", cfg.Runtime)
 }
 
-func TestSetDefaultProfile(t *testing.T) {
-	t.Run("creates config when absent", func(t *testing.T) {
+func TestCreate(t *testing.T) {
+	t.Run("writes config when absent", func(t *testing.T) {
 		root := t.TempDir()
-		require.NoError(t, config.SetDefaultProfile(root, "default"))
+		created, err := config.Create(root, "default")
+		require.NoError(t, err)
+		require.True(t, created)
 
 		cfg, err := config.Load(root)
 		require.NoError(t, err)
 		require.Equal(t, "default", cfg.DefaultProfile)
 	})
 
-	t.Run("preserves existing settings", func(t *testing.T) {
+	t.Run("writes only default_profile", func(t *testing.T) {
 		root := t.TempDir()
-		write(t, filepath.Join(root, config.FileName), `{
-  "runtime": "docker",
-  "mounts": {"roots": ["/opt/work"]},
-  "env": {"deny": ["FOO"]}
-}`)
-		require.NoError(t, config.SetDefaultProfile(root, "default"))
-
-		cfg, err := config.Load(root)
+		_, err := config.Create(root, "default")
 		require.NoError(t, err)
-		require.Equal(t, "default", cfg.DefaultProfile)
-		require.Equal(t, "docker", cfg.Runtime)
-		require.Equal(t, []string{"/opt/work"}, cfg.Mounts.Roots)
-		require.Equal(t, []string{"FOO"}, cfg.Env.Deny)
-	})
-
-	t.Run("does not freeze derived defaults into the file", func(t *testing.T) {
-		root := t.TempDir()
-		require.NoError(t, config.SetDefaultProfile(root, "default"))
 
 		// Load() materializes mount roots and gh_config; those are derived, not
 		// user intent, and must not be written back as if they were.
@@ -113,10 +99,27 @@ func TestSetDefaultProfile(t *testing.T) {
 		require.Equal(t, map[string]any{"default_profile": "default"}, raw)
 	})
 
+	t.Run("leaves an existing config completely untouched", func(t *testing.T) {
+		root := t.TempDir()
+		body := `{"runtime": "docker", "mounts": {"roots": ["/opt/work"]}}`
+		write(t, filepath.Join(root, config.FileName), body)
+
+		created, err := config.Create(root, "default")
+		require.NoError(t, err)
+		require.False(t, created, "must report that it did not write")
+
+		b, err := os.ReadFile(filepath.Join(root, config.FileName))
+		require.NoError(t, err)
+		require.Equal(t, body, string(b), "byte-for-byte unchanged")
+	})
+
 	t.Run("never overwrites an existing default_profile", func(t *testing.T) {
 		root := t.TempDir()
 		write(t, filepath.Join(root, config.FileName), `{"default_profile": "mine"}`)
-		require.NoError(t, config.SetDefaultProfile(root, "default"))
+
+		created, err := config.Create(root, "default")
+		require.NoError(t, err)
+		require.False(t, created)
 
 		cfg, err := config.Load(root)
 		require.NoError(t, err)
@@ -125,7 +128,8 @@ func TestSetDefaultProfile(t *testing.T) {
 
 	t.Run("leaves no temp file behind", func(t *testing.T) {
 		root := t.TempDir()
-		require.NoError(t, config.SetDefaultProfile(root, "default"))
+		_, err := config.Create(root, "default")
+		require.NoError(t, err)
 
 		entries, err := os.ReadDir(root)
 		require.NoError(t, err)

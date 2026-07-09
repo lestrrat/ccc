@@ -50,24 +50,35 @@ func (a *app) resolveOrBootstrap() (profile.Resolution, error) {
 	return a.bootstrap()
 }
 
-// bootstrap creates the first profile and records it as default_profile, so
-// that a bare `ccc` keeps working after a second profile is added later.
+// bootstrap creates the first profile, writing a config.json that names it as
+// default_profile so a bare `ccc` keeps working once a second profile exists.
 func (a *app) bootstrap() (profile.Resolution, error) {
 	name := profile.DefaultName
 	if err := a.store.Create(name); err != nil {
 		return profile.Resolution{}, err
 	}
-	if err := config.SetDefaultProfile(a.cfg.Root, name); err != nil {
+
+	created, err := config.Create(a.cfg.Root, name)
+	if err != nil {
 		return profile.Resolution{}, err
 	}
 	a.cfg.DefaultProfile = name
 
 	// The profile starts empty: ccc never copies credentials without being
 	// asked. Claude Code will prompt for login on first use.
+	fmt.Fprintf(os.Stderr, "ccc: first run — created profile %q\n", name)
 	fmt.Fprintf(os.Stderr,
-		"ccc: first run — created profile %q and set default_profile in %s/config.json\n"+
-			"ccc: it has no credentials yet; seed an existing config with `ccc profile create <name> --from ~/.claude`\n",
-		name, a.cfg.Root)
+		"ccc: it has no credentials yet; seed an existing config with `ccc profile create <name> --from ~/.claude`\n")
+
+	if created {
+		fmt.Fprintf(os.Stderr, "ccc: wrote %s/%s naming it default_profile\n", a.cfg.Root, config.FileName)
+	} else {
+		// A hand-written config is never rewritten. Say so, because otherwise a
+		// bare `ccc` starts failing as soon as a second profile is created.
+		fmt.Fprintf(os.Stderr,
+			"ccc: %s/%s exists and was left untouched; add \"default_profile\": %q to keep bare `ccc` working\n",
+			a.cfg.Root, config.FileName, name)
+	}
 
 	return profile.Resolution{Name: name, Source: profile.SourceBootstrap}, nil
 }
