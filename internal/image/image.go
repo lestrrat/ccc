@@ -94,9 +94,13 @@ func (b *Builder) dockerfile() ([]byte, error) {
 
 func (b *Builder) buildArgs() map[string]string {
 	return map[string]string{
-		"UID":            strconv.Itoa(b.id.UID),
-		"GID":            strconv.Itoa(b.id.GID),
-		"USERNAME":       b.id.User,
+		"UID":      strconv.Itoa(b.id.UID),
+		"GID":      strconv.Itoa(b.id.GID),
+		"USERNAME": b.id.User,
+		// The container user's home must equal the host's, so identical absolute
+		// paths mean the same thing across the mount. It is not always
+		// /home/<user> (macOS, ostree, LDAP), and every mount lands at id.Home.
+		"HOME":           b.id.Home,
 		"CLAUDE_VERSION": b.claudeVersion(),
 	}
 }

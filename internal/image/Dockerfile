@@ -3,6 +3,12 @@ FROM node:22-bookworm
 ARG UID=1000
 ARG GID=1000
 ARG USERNAME=user
+# HOME is the HOST's home path, mirrored into the container so that identical
+# absolute paths mean the same thing on both sides of the mount. It is NOT
+# always /home/${USERNAME}: macOS is /Users/x, ostree is /var/home/x, LDAP homes
+# vary. ccc places every mount at the host home, so the container user's home
+# must match it exactly.
+ARG HOME=/home/user
 ARG GO_VERSION=1.26.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -39,10 +45,13 @@ RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local \
 # into mounted repositories are owned by the invoking user and (b) getpwuid(3)
 # resolves, which docker's --user needs. The base image ships node:1000, which
 # collides whenever the host user is also 1000.
+# `mkdir -p $(dirname $HOME)` because useradd -m does not create missing parents,
+# and a host home may be nested (/var/home/x, /Users/x) with no parent in the image.
 RUN if getent passwd ${UID} >/dev/null; then userdel -r "$(getent passwd ${UID} | cut -d: -f1)" || true; fi \
  && if getent group ${GID} >/dev/null; then groupdel "$(getent group ${GID} | cut -d: -f1)" || true; fi \
  && groupadd -g ${GID} ${USERNAME} \
- && useradd -m -u ${UID} -g ${GID} -s /bin/bash ${USERNAME} \
+ && mkdir -p "$(dirname "${HOME}")" \
+ && useradd -u ${UID} -g ${GID} -s /bin/bash -d ${HOME} -m ${USERNAME} \
  && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
  && chmod 0440 /etc/sudoers.d/${USERNAME}
 
@@ -57,4 +66,4 @@ ARG CLAUDE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} && npm cache clean --force
 
 USER ${USERNAME}
-ENV HOME=/home/${USERNAME}
+ENV HOME=${HOME}
