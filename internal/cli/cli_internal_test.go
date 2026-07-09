@@ -150,6 +150,16 @@ func TestResolveTarget(t *testing.T) {
 	})
 }
 
+// `ccc pin --help` printed "unexpected argument --help" before this existed.
+func TestWantsHelp(t *testing.T) {
+	require.True(t, wantsHelp([]string{"--help"}))
+	require.True(t, wantsHelp([]string{"-h"}))
+	require.True(t, wantsHelp([]string{"--to", "2.1.205", "--help"}))
+	require.False(t, wantsHelp(nil))
+	require.False(t, wantsHelp([]string{"--to", "2.1.205"}))
+	require.False(t, wantsHelp([]string{"create", "work"}))
+}
+
 func TestReservedWordsAreDispatchable(t *testing.T) {
 	for _, name := range []string{"profile", "pin", "check", "help", "version"} {
 		require.Contains(t, reserved, name)

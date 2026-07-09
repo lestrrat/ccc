@@ -65,6 +65,14 @@ func Run(argv []string) error {
 		return cmdHelp(nil, nil)
 	}
 
+	// `ccc pin --help` must print help, not "unexpected argument --help".
+	// Only for reserved commands: a bare `--help` is claude's to interpret.
+	if !forced && len(rest) > 0 {
+		if _, ok := reserved[rest[0]]; ok && wantsHelp(rest[1:]) {
+			return cmdHelp(nil, nil)
+		}
+	}
+
 	a, err := newApp(g)
 	if err != nil {
 		return err
@@ -76,6 +84,16 @@ func Run(argv []string) error {
 		}
 	}
 	return cmdClaude(a, rest)
+}
+
+// wantsHelp reports whether a reserved command's arguments ask for help.
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseGlobals consumes leading ccc flags. It returns the remaining arguments
@@ -222,45 +240,55 @@ Run Claude Code in a container so ~/.claude can be swapped per account.
 
 usage:
   ccc [flags] [claude args...]   start Claude Code in the resolved profile
-  ccc <command> [args...]        run a ccc command (see below)
+  ccc <command> [args...]        run a ccc command
   ccc -- <claude args...>        pass everything through to claude verbatim
+
+A first argument that is not one of the commands below goes to claude, so
+` + "`ccc doctor`" + ` runs ` + "`claude doctor`" + `. ccc reserves no claude subcommand.
 
 commands:
   profile create <name>      create a profile
     --from <dir>             seed it from an existing ~/.claude
   profile list               list profiles ('*' marks default_profile)
-  profile rm <name>          delete a profile and its credentials
-  pin                        pin the latest Claude Code, rebuild one layer
-    --to <version>           pin a specific version instead ("latest"
-                             resolves to a concrete version before storing)
-    --no-cache               also rebuild every layer (base image, apt,
-                             golangci-lint) — the pin alone cannot refresh them
-  check                      verify a session would start; exits non-zero if not
-  version                    print version
+  profile rm <name>          delete a profile, credentials included
+  pin                        pin the newest Claude Code and build that image
+    --to <version>           pin this version instead ("latest" is resolved
+                             to a concrete version before being stored)
+    --no-cache               rebuild every layer, not just Claude Code's —
+                             the only way to refresh apt and golangci-lint
+  check                      verify a session would start (non-zero if not)
+  version                    print ccc's version
   help                       print this help
 
-The image builds itself on first run; there is no build command.
+Combine -p with pin to scope it: ` + "`ccc -p work pin`" + ` pins that profile alone.
+Without -p the version is recorded globally, and every profile without a pin
+of its own follows it.
 
-There is no login command: a profile with no credentials makes Claude Code
-run its own setup. To re-authenticate one, run ` + "`ccc -p <name> -- auth login`" + `.
+There is no build command: the image builds on first run, and again whenever
+the pin changes. There is no login command: a profile with no credentials
+makes Claude Code run its own setup. Re-authenticate an existing profile with
+` + "`ccc -p <name> -- auth login`" + `.
 
 flags:
   -p, --profile <name>       profile to run as
-      --runtime <name>       podman | docker | auto
+      --runtime <name>       podman | docker | auto (or $CCC_RUNTIME)
   -h, --help                 print this help
+
+Flags must precede the command or the claude arguments. Use -- to force
+passthrough when a claude argument collides with one of ccc's own.
 
 examples:
   ccc                        start Claude Code
   ccc --resume               start Claude Code with --resume
   ccc -p work --resume       ... as the "work" profile
+  ccc version                ccc's own version
+  ccc --version              claude's version, not ccc's
   ccc -- --help              claude's help, not ccc's
-  ccc doctor                 ` + "`claude doctor`" + ` — not reserved by ccc
-
-Command names above are reserved: they are consumed by ccc, not passed to
-claude. Use -- to force passthrough when a claude argument collides.
 
 profile resolution, first match wins:
   1. --profile <name>
   2. .ccc.json in the current directory or an ancestor
   3. default_profile in ~/.config/ccc/config.json
+
+With no profiles at all, the first run creates one named "default".
 `
