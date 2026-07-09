@@ -25,6 +25,14 @@ var profileBreaking = []string{
 	"ANTHROPIC_AUTH_TOKEN",
 }
 
+// hostPathScoped name host filesystem paths that the container does not mount.
+// Inheriting them points tools at directories that do not exist inside the
+// container: `go build` with the host's GOMODCACHE fails in a way that reads
+// like a Go bug, not a mount bug. The container's own defaults are correct.
+var hostPathScoped = []string{
+	"GOPATH", "GOCACHE", "GOMODCACHE", "GOBIN",
+}
+
 // handledSeparately are forwarded by the run logic with rewritten values.
 var handledSeparately = []string{
 	"SSH_AUTH_SOCK",
@@ -32,9 +40,10 @@ var handledSeparately = []string{
 
 // DefaultDeny returns the built-in denylist.
 func DefaultDeny() []string {
-	deny := make([]string, 0, len(containerManaged)+len(profileBreaking)+len(handledSeparately))
+	deny := make([]string, 0, len(containerManaged)+len(profileBreaking)+len(hostPathScoped)+len(handledSeparately))
 	deny = append(deny, containerManaged...)
 	deny = append(deny, profileBreaking...)
+	deny = append(deny, hostPathScoped...)
 	deny = append(deny, handledSeparately...)
 	return deny
 }

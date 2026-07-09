@@ -14,6 +14,7 @@ import (
 	ccenv "github.com/lestrrat-go/ccc/internal/env"
 	"github.com/lestrrat-go/ccc/internal/image"
 	"github.com/lestrrat-go/ccc/internal/profile"
+	"github.com/lestrrat-go/ccc/internal/workspace"
 )
 
 // cmdClaude is the default command: resolve a profile, ensure the image, and
@@ -201,14 +202,34 @@ func (a *app) exec(res profile.Resolution, cmd []string) error {
 
 // mounts assembles the container's view of the host. Roots are mounted at
 // their identical absolute paths; the profile is layered on top of $HOME.
+//
+// Mounts are applied parent-first, so a deeper mount always wins: read-write
+// roots sit on top of a read-only $HOME, and the profile sits on top of both.
 func (a *app) mounts(name string) ([]container.Mount, error) {
 	var out []container.Mount
 
-	for _, root := range a.cfg.Mounts.Roots {
+	// $HOME first, when asked for: it is the shallowest path, so everything
+	// below overrides it.
+	switch a.cfg.Mounts.Home {
+	case config.HomeRO:
+		out = append(out, container.Mount{Source: a.id.Home, Target: a.id.Home, ReadOnly: true})
+	case config.HomeRW:
+		out = append(out, container.Mount{Source: a.id.Home, Target: a.id.Home})
+	}
+
+	for _, root := range a.roots() {
 		if _, err := os.Stat(root); err != nil {
 			return nil, fmt.Errorf("mount root %s is not accessible: %w", root, err)
 		}
 		out = append(out, container.Mount{Source: root, Target: root})
+	}
+
+	if a.cfg.Mounts.Cache {
+		src := a.store.CacheDir(name)
+		if err := os.MkdirAll(src, 0o700); err != nil {
+			return nil, fmt.Errorf("failed to create profile cache: %w", err)
+		}
+		out = append(out, container.Mount{Source: src, Target: filepath.Join(a.id.Home, ".cache")})
 	}
 
 	// The profile owns both halves of Claude Code's state. These sort after
@@ -229,35 +250,35 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 		out = append(out, container.Mount{Source: src, Target: src, ReadOnly: true})
 	}
 
-	// Protect the host's native Claude Code from the container. Two distinct
-	// problems, two distinct mounts:
-	//
-	//  1. Resolution. $HOME is mounted, and a login shell inside the container
-	//     sources the host's ~/.profile, which prepends ~/.local/bin. `claude`
-	//     would resolve to the host's binary. The shim below shadows it.
-	//
-	//  2. Replacement. `claude install` (which Claude Code itself suggests when
-	//     its npm self-update fails) writes a temp file and rename()s it over
-	//     ~/.local/bin/claude. A read-only bind mount on the FILE does not stop
-	//     that: rename replaces the directory entry, and the directory is
-	//     writable. Only mounting the parent directories read-only does, and it
-	//     holds against `claude install --force` because EROFS is not a check
-	//     the installer can override.
-	for _, rel := range []string{".local/bin", ".local/share/claude"} {
-		src := filepath.Join(a.id.Home, rel)
-		if _, err := os.Stat(src); err != nil {
-			continue
+	// The host's Claude Code is only visible when $HOME is mounted. By default
+	// it is not, so there is nothing to defend against.
+	if a.cfg.Mounts.Home != config.HomeNone {
+		// Resolution: a login shell inside the container sources the host's
+		// ~/.profile, which prepends ~/.local/bin, so a bare `claude` would run
+		// the host's binary rather than the image's. Shadow it.
+		hostNative := filepath.Join(a.id.Home, image.HostNativeBin)
+		if _, err := os.Stat(hostNative); err == nil {
+			shim, err := image.EnsureShim(a.cfg.Root)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, container.Mount{Source: shim, Target: hostNative, ReadOnly: true})
 		}
-		out = append(out, container.Mount{Source: src, Target: src, ReadOnly: true})
 	}
 
-	hostNative := filepath.Join(a.id.Home, image.HostNativeBin)
-	if _, err := os.Stat(hostNative); err == nil {
-		shim, err := image.EnsureShim(a.cfg.Root)
-		if err != nil {
-			return nil, err
+	// Replacement is a separate problem, and only "rw" has it. `claude install`
+	// rename(2)s a temp file over ~/.local/bin/claude; a read-only bind mount on
+	// the FILE does not stop that, because rename replaces the directory entry
+	// and the directory is writable. A read-only $HOME does stop it — which is
+	// why "ro" needs no special-casing, and "rw" cannot be made safe.
+	if a.cfg.Mounts.Home == config.HomeRW {
+		for _, rel := range []string{".local/bin", ".local/share/claude"} {
+			src := filepath.Join(a.id.Home, rel)
+			if _, err := os.Stat(src); err != nil {
+				continue
+			}
+			out = append(out, container.Mount{Source: src, Target: src, ReadOnly: true})
 		}
-		out = append(out, container.Mount{Source: shim, Target: hostNative, ReadOnly: true})
 	}
 
 	ghConfig, err := a.ghConfig(name)
@@ -303,6 +324,15 @@ func (a *app) ghConfig(name string) (string, error) {
 	return dir, nil
 }
 
+// roots are the read-write host directories for this session: the configured
+// ones, or — by default — the repository the working directory belongs to.
+func (a *app) roots() []string {
+	if len(a.cfg.Mounts.Roots) > 0 {
+		return a.cfg.Mounts.Roots
+	}
+	return workspace.Roots(a.cwd)
+}
+
 // env forwards the host environment minus the denylist, then re-adds the
 // variables ccc rewrites itself.
 func (a *app) env() map[string]string {
@@ -312,19 +342,28 @@ func (a *app) env() map[string]string {
 			m["SSH_AUTH_SOCK"] = sock
 		}
 	}
+
+	// GOCACHE defaults under ~/.cache, so the profile cache mount already
+	// captures it. GOMODCACHE defaults to ~/go/pkg/mod, outside it, and needs
+	// pointing. Set via env rather than `go env -w`, which would persist to the
+	// container's ephemeral ~/.config/go/env and vanish with the container.
+	if a.cfg.Mounts.Cache {
+		m["GOMODCACHE"] = filepath.Join(a.id.Home, ".cache", "go-mod")
+	}
 	return m
 }
 
-// checkWorkdir refuses to run outside the configured roots rather than
-// silently mounting the working directory behind the user's back.
+// checkWorkdir refuses to run outside the mounted roots rather than silently
+// mounting the working directory behind the user's back.
 func (a *app) checkWorkdir() error {
-	for _, root := range a.cfg.Mounts.Roots {
+	roots := a.roots()
+	for _, root := range roots {
 		if underRoot(a.cwd, root) {
 			return nil
 		}
 	}
-	return fmt.Errorf("working directory %s is not under any configured mount root (%s):\nadd it to mounts.roots in %s/config.json",
-		a.cwd, strings.Join(a.cfg.Mounts.Roots, ", "), a.cfg.Root)
+	return fmt.Errorf("working directory %s is not under any mount root (%s):\nadd it to mounts.roots in %s/config.json",
+		a.cwd, strings.Join(roots, ", "), a.cfg.Root)
 }
 
 func underRoot(path string, root string) bool {

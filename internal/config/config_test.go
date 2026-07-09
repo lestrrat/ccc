@@ -22,10 +22,30 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	require.NoError(t, err, "ccc must work with no configuration at all")
 	require.Equal(t, "auto", cfg.Runtime)
 
+	// Roots are NOT defaulted to $HOME: an empty list means "the repository the
+	// working directory belongs to", resolved per-invocation. Defaulting to the
+	// home directory put the host's ~/.local inside every container.
+	require.Empty(t, cfg.Mounts.Roots)
+	require.Equal(t, config.HomeNone, cfg.Mounts.Home, "$HOME is not mounted by default")
+	require.False(t, cfg.Mounts.Cache, "caches are ephemeral by default")
+
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
-	require.Equal(t, []string{home}, cfg.Mounts.Roots, "defaults to the whole home dir")
 	require.Equal(t, filepath.Join(home, ".config", "gh"), cfg.Mounts.GhConfig)
+}
+
+func TestHomeModeValidation(t *testing.T) {
+	for _, mode := range []string{"ro", "rw", ""} {
+		root := t.TempDir()
+		write(t, filepath.Join(root, config.FileName), `{"mounts":{"home":"`+mode+`"}}`)
+		_, err := config.Load(root)
+		require.NoError(t, err, "mode %q must be accepted", mode)
+	}
+
+	root := t.TempDir()
+	write(t, filepath.Join(root, config.FileName), `{"mounts":{"home":"readonly"}}`)
+	_, err := config.Load(root)
+	require.ErrorContains(t, err, "invalid mounts.home")
 }
 
 func TestLoad(t *testing.T) {

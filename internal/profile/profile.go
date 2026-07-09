@@ -50,6 +50,10 @@ func (s *Store) ClaudeJSON(name string) string { return filepath.Join(s.Dir(name
 // ConfigPath is the profile's profile.json.
 func (s *Store) ConfigPath(name string) string { return filepath.Join(s.Dir(name), "profile.json") }
 
+// CacheDir is profile-owned build-cache storage, mounted at the container's
+// ~/.cache when mounts.cache is enabled. Never the host's cache directory.
+func (s *Store) CacheDir(name string) string { return filepath.Join(s.Dir(name), "cache") }
+
 // VersionFile is the Claude Code pin, inside the profile's mounted claude/ dir.
 const VersionFile = ".ccc-claude-version"
 

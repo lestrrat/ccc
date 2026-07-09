@@ -38,9 +38,11 @@ Do not replace the mounts with an environment variable.
 
 ## Non-goals
 
-ccc is **not a security sandbox.** The container isolates Claude Code profiles, nothing else.
+ccc is **not a security sandbox.** The container isolates Claude Code profiles; that is the whole of its job.
 
-The contained agent may see and do anything you can: host network, your SSH keys, a forwarded SSH agent, read-write source mounts. This is intentional — switching profiles must not change what the tools in your workflow can reach. Do not reason about ccc as a blast-radius control.
+The contained agent has host networking, your SSH keys, a forwarded SSH agent, and read-write access to the repository you launched it in. It can push code and reach services on localhost. Do not reason about ccc as a blast-radius control.
+
+It does *not* mount your home directory, but that is a consequence of the default being narrow, not a security claim. `mounts.home` opts back in.
 
 ## Install
 
@@ -63,6 +65,7 @@ One profile = one account = one host directory = one container `$HOME` overlay.
       claude/              # mounted at $HOME/.claude
       claude.json          # mounted at $HOME/.claude.json
       profile.json         # optional per-profile overrides
+      cache/               # only when mounts.cache is on
 ```
 
 ```sh
@@ -127,26 +130,72 @@ There is no `build` command: the image builds itself on first run, and whenever 
 
 ## What the container sees
 
+**Your repository, and nothing else of your home directory.**
+
 | Host | Container | Mode |
 |------|-----------|------|
-| `mounts.roots` (default `$HOME`) | identical absolute path | rw |
+| the repository (see below) | identical absolute path | rw |
 | `profiles/<name>/claude/` | `$HOME/.claude` | rw |
 | `profiles/<name>/claude.json` | `$HOME/.claude.json` | rw |
 | `~/.ssh` | `$HOME/.ssh` | ro |
 | `~/.gitconfig` | `$HOME/.gitconfig` | ro |
 | `$SSH_AUTH_SOCK` | same path | rw |
 | gh config dir | `$HOME/.config/gh` | ro |
-| `~/.local/bin` | same path | ro |
-| `~/.local/share/claude` | same path | ro |
-| `~/.config/ccc/shim/claude` | `$HOME/.local/bin/claude` | ro |
 
-The last three protect a host-native Claude Code, if you have one; see [Which Claude Code runs](#which-claude-code-runs).
+`$HOME` itself is **not** mounted. So the host's `~/.local`, `~/go`, and `~/.cache` do not exist inside the container, and neither does the host's Claude Code installation.
 
 The container user mirrors your UID, GID, username, and home directory, and roots are mounted at their **identical absolute paths**. Absolute paths therefore mean the same thing on both sides of the mount, and files written into your repositories are owned by you.
 
 Networking is `--network=host`: dev servers on localhost stay reachable, and Claude Code's OAuth loopback callback lands on your browser during login.
 
-The working directory must live under a configured root. ccc refuses to run otherwise rather than silently mounting it.
+### Which directories
+
+By default, the repository the working directory belongs to — which is not the same as the working directory:
+
+- `git rev-parse --show-toplevel`, so running `ccc` from a subdirectory still gives git a repository
+- `git rev-parse --git-common-dir`, when it lives outside the root
+
+The second is what makes **worktrees** work. A worktree's `.git` is a *file* containing `gitdir: <main-repo>/.git/worktrees/<name>`. Mount only the worktree and the container gets a dangling gitdir, so every `git` command fails.
+
+Outside a git repository, it is just the working directory.
+
+To mount more, list them in `mounts.roots`. They are mounted read-write at their identical absolute paths, and they replace the default — so include the repository, or a parent of it:
+
+```json
+{"mounts": {"roots": ["~/dev/src"]}}
+```
+
+The working directory must live under a root. ccc refuses to run otherwise rather than silently mounting it.
+
+### Mounting `$HOME`
+
+```json
+{"mounts": {"home": "ro"}}
+```
+
+`"ro"` mounts your home read-only, with `mounts.roots` read-write on top — deeper mounts win, so the repository stays writable while the rest of your home is not. This is the safe way to get breadth.
+
+It matters because a read-only *parent directory* is what actually stops the container replacing files in it. A read-only bind mount on a file does not: `rename(2)` swaps the directory entry, and the directory would still be writable. This is not theoretical — `claude install`, which Claude Code suggests when its self-update fails, does exactly that to `~/.local/bin/claude`.
+
+`"rw"` also exists. It mounts your home writable, and then ccc read-only-mounts `~/.local/bin` and `~/.local/share/claude` to keep the container from rewriting your host's Claude Code. Enumerating the paths that matter is guesswork; `"ro"` is a boundary. Prefer `"ro"`.
+
+### Caches
+
+Ephemeral. `~/.cache` and `~/go` live inside the container and vanish with it, so every session builds cold.
+
+```json
+{"mounts": {"cache": true}}
+```
+
+mounts a **profile-owned** cache directory (`profiles/<name>/cache/`) at the container's `~/.cache`, and points `GOMODCACHE` at `~/.cache/go-mod`. `GOCACHE` already defaults under `~/.cache`, so it follows for free.
+
+ccc never mounts the *host's* `~/go/pkg/mod` or `~/.cache/go-build`. That would be a writable hole in a read-only `$HOME`, and a macOS host's `~/go/bin` is Mach-O binaries that a Linux container would put on `PATH`.
+
+If you genuinely want to share one cache with the host, symlink the host's directory into the profile's `cache/`, and own that decision explicitly.
+
+> **Not settled.** The cache design — profile-owned rather than host-shared, `GOMODCACHE` via environment rather than `go env -w` — is provisional. `go env -w` was rejected because it persists to the container's ephemeral `~/.config/go/env`. If the ephemeral-by-default choice proves annoying in practice, this is the first thing to revisit.
+
+Host `GOPATH`, `GOCACHE`, `GOMODCACHE`, and `GOBIN` are dropped from the inherited environment: they name host paths the container does not mount, and inheriting them makes `go build` fail in a way that reads like a Go bug rather than a mount bug.
 
 ## Environment
 
@@ -187,10 +236,13 @@ A profile *is* a `~/.claude`, so permission behavior belongs where Claude Code a
   "runtime": "auto",
   "default_profile": "personal",
   "image": {
-    "extra_dockerfile": "Dockerfile.extra"
+    "extra_dockerfile": "Dockerfile.extra",
+    "claude_version": "2.1.205"
   },
   "mounts": {
     "roots": ["~/dev/src"],
+    "home": "ro",
+    "cache": true,
     "gh_config": "~/.config/gh"
   },
   "env": {
@@ -200,7 +252,7 @@ A profile *is* a `~/.claude`, so permission behavior belongs where Claude Code a
 }
 ```
 
-`runtime` is `auto`, `podman`, or `docker`. `mounts.roots` defaults to `["~"]`.
+`runtime` is `auto`, `podman`, or `docker`. `mounts.roots` defaults to the current repository. `mounts.home` is omitted, `"ro"`, or `"rw"`. `mounts.cache` is off.
 
 `profiles/<name>/profile.json`, for a per-account GitHub identity:
 
@@ -232,13 +284,13 @@ To add tooling without forking ccc, drop a `~/.config/ccc/Dockerfile.extra`; it 
 
 The image's, at `/usr/local/bin/claude`. ccc execs that absolute path.
 
-This matters because `$HOME` is mounted, so the container can see a host-native Claude Code at `~/.local/bin/claude`. Two separate problems follow, and they need two separate defenses.
+By default this is uninteresting, because `$HOME` is not mounted and the host's Claude Code is not visible from inside. It becomes interesting the moment you set `mounts.home`, and then there are two separate problems.
 
 **Resolution.** A login shell inside the container sources the host's `~/.profile`, which prepends `~/.local/bin`, so a bare `claude` would run the *host's* binary. ccc shadows that path with a shim (`~/.config/ccc/shim/claude`) that execs the image's binary instead.
 
-**Replacement.** `claude install` — which Claude Code itself suggests when its npm self-update fails — writes a temp file and `rename()`s it over `~/.local/bin/claude`. A read-only bind mount on that *file* does not stop it: `rename` replaces the directory entry, and the directory is writable. Left alone, running `claude install` inside a ccc session downloads 257 MB into your host's `~/.local/share/claude/versions/` and repoints your host's symlink.
+**Replacement.** `claude install` — which Claude Code suggests when its npm self-update fails — writes a temp file and `rename()`s it over `~/.local/bin/claude`. Left unguarded, running it inside a ccc session downloads 257 MB into your host's `~/.local/share/claude/versions/` and repoints your host's symlink.
 
-So ccc mounts `~/.local/bin` and `~/.local/share/claude` **read-only**. That holds even against `claude install --force`, because `EROFS` is not a check the installer can override. The consequence: nothing inside the container can install into `~/.local/bin`. Your host binaries there stay visible and runnable, just not replaceable.
+Under `"home": "ro"` this is impossible: `rename(2)` needs a writable parent directory. Under `"home": "rw"` ccc read-only-mounts `~/.local/bin` and `~/.local/share/claude`, which holds even against `claude install --force` — `EROFS` is not a check the installer can override — at the cost of nothing inside the container being able to install into `~/.local/bin`.
 
 ### Upgrading Claude Code
 

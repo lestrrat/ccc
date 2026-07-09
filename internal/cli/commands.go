@@ -242,8 +242,21 @@ func profileRemove(a *app, args []string) error {
 func cmdDoctor(a *app, _ []string) error {
 	fmt.Printf("config root:  %s\n", a.cfg.Root)
 	fmt.Printf("identity:     %s (uid=%d gid=%d)\n", a.id.User, a.id.UID, a.id.GID)
-	fmt.Printf("home:         %s\n", a.id.Home)
-	fmt.Printf("mount roots:  %s\n", strings.Join(a.cfg.Mounts.Roots, ", "))
+	// The resolved roots, not the configured ones: an empty config means "the
+	// repository this directory belongs to", computed per-invocation.
+	fmt.Printf("mount roots:  %s\n", strings.Join(a.roots(), ", "))
+
+	home := "not mounted"
+	if a.cfg.Mounts.Home != config.HomeNone {
+		home = a.id.Home + " (" + a.cfg.Mounts.Home + ")"
+	}
+	fmt.Printf("home:         %s\n", home)
+
+	cache := "ephemeral"
+	if a.cfg.Mounts.Cache {
+		cache = "profile-owned"
+	}
+	fmt.Printf("cache:        %s\n", cache)
 
 	rt, err := a.runtime()
 	if err != nil {

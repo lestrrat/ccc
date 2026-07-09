@@ -50,12 +50,36 @@ const DefaultClaudeVersion = "latest"
 
 // Mounts controls what host state the container sees.
 type Mounts struct {
-	// Roots are host directories mounted at their identical absolute path.
-	// The working directory must live under one of them.
+	// Roots are host directories mounted read-write at their identical absolute
+	// path. Empty means "the repository the working directory belongs to".
 	Roots []string `json:"roots,omitempty"`
+
+	// Home mounts the host's $HOME: "" (default) not at all, "ro" read-only,
+	// "rw" read-write.
+	//
+	// "ro" is the safe way to get breadth: Roots are mounted read-write on top
+	// of it, and a read-only parent directory is what actually stops
+	// `claude install` from replacing the host's binary — rename(2) needs a
+	// writable directory, not just a writable file.
+	Home string `json:"home,omitempty"`
+
+	// Cache mounts a profile-owned cache directory at the container's ~/.cache
+	// and points GOMODCACHE into it, so ephemeral containers do not rebuild
+	// from cold. It is never the host's cache: that would be a writable hole in
+	// a read-only $HOME, and a macOS host's artifacts are useless to a Linux
+	// container anyway.
+	Cache bool `json:"cache,omitempty"`
+
 	// GhConfig is the gh CLI config directory. A profile may override it.
 	GhConfig string `json:"gh_config,omitempty"`
 }
+
+// Home mount modes.
+const (
+	HomeNone = ""
+	HomeRO   = "ro"
+	HomeRW   = "rw"
+)
 
 // Env controls environment inheritance. ccc forwards the whole host
 // environment minus a built-in denylist; these extend and override it.
@@ -212,16 +236,21 @@ func (c *Config) applyDefaults() error {
 		return fmt.Errorf("failed to locate home dir: %w", err)
 	}
 
-	// Default to the whole home directory. ccc isolates Claude Code profiles,
-	// not the filesystem — the contained agent should see what the user sees.
-	if len(c.Mounts.Roots) == 0 {
-		c.Mounts.Roots = []string{home}
-	}
+	// Roots are NOT defaulted to $HOME. An empty list means "the repository the
+	// working directory belongs to", resolved per-invocation by the caller.
+	// Mounting the whole home by default put the host's ~/.local — and with it
+	// the host's Claude Code installation — inside every container.
 	for i, r := range c.Mounts.Roots {
 		c.Mounts.Roots[i], err = Expand(r, home)
 		if err != nil {
 			return err
 		}
+	}
+
+	switch c.Mounts.Home {
+	case HomeNone, HomeRO, HomeRW:
+	default:
+		return fmt.Errorf("invalid mounts.home %q: want \"ro\", \"rw\", or omitted", c.Mounts.Home)
 	}
 
 	if c.Mounts.GhConfig == "" {

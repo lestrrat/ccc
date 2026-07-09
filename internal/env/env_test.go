@@ -45,6 +45,24 @@ func TestFilter(t *testing.T) {
 		require.NotContains(t, got, "SSH_AUTH_SOCK")
 	})
 
+	// These name host paths the container does not mount. Inheriting them makes
+	// `go build` fail against a GOMODCACHE that does not exist inside, in a way
+	// that reads like a Go bug rather than a mount bug.
+	t.Run("drops host-path-scoped go vars", func(t *testing.T) {
+		got := env.Filter([]string{
+			"GOPATH=/home/u/go",
+			"GOCACHE=/home/u/.cache/go-build",
+			"GOMODCACHE=/home/u/go/pkg/mod",
+			"GOBIN=/home/u/go/bin",
+			"GOPRIVATE=github.com/acme/*",
+		}, nil, nil)
+
+		for _, k := range []string{"GOPATH", "GOCACHE", "GOMODCACHE", "GOBIN"} {
+			require.NotContains(t, got, k)
+		}
+		require.Contains(t, got, "GOPRIVATE", "not a path; must still be forwarded")
+	})
+
 	t.Run("allow re-admits a denied var", func(t *testing.T) {
 		got := env.Filter(environ, nil, []string{"ANTHROPIC_API_KEY"})
 		require.Equal(t, "sk-ant-secret", got["ANTHROPIC_API_KEY"])
