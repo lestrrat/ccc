@@ -133,7 +133,7 @@ ccc's own flags precede --; claude's go after it:
 Other commands:
 
 ```sh
-ccc pin                  # pin the latest Claude Code, rebuild one layer
+ccc pin                  # pin the latest Claude Code and rebuild
 ccc check                # verify a session would start; non-zero if not
 ccc help                 # same as ccc --help
 ```
@@ -352,7 +352,7 @@ Inside the container, Claude Code is installed under root-owned `/usr/local` whi
  "version_from":"2.1.204","version_to":"2.1.205"}
 ```
 
-On the next `ccc`, that `version_to` becomes the profile's pin and one image layer rebuilds:
+On the next `ccc`, that `version_to` becomes the profile's pin and the image rebuilds (just the Claude Code layer, absent a `Dockerfile.extra`):
 
 ```
 ccc: Claude Code asked for 2.1.205 (have 2.1.204); rebuilding
@@ -400,7 +400,9 @@ ccc -p work pin              # pin just the "work" profile
 
 A pin is `latest` or a release semver like `2.1.205`. **Prereleases (`-beta`, `-rc.1`) are refused**: ccc orders versions on the `X.Y.Z` triple alone, so a pinned prerelease would compare equal to its release and never advance to it — a stuck profile. Claude Code ships stable through npm's `latest`, so this only ever rejects a hand-typed prerelease.
 
-The version is an explicit pin. `CLAUDE_VERSION` is the last `ARG` in the Dockerfile, immediately before the only `RUN` that uses it, so bumping it invalidates **one layer**: apt, the Go toolchain, and `golangci-lint` above it are reused. And because the image tag content-hashes the build args, a changed pin is a changed tag — the next plain `ccc` rebuilds on its own.
+The version is an explicit pin. `CLAUDE_VERSION` is the last `ARG` in the base Dockerfile, immediately before the only `RUN` that uses it, so bumping it invalidates just that layer: apt, the Go toolchain, and `golangci-lint` above it are reused. And because the image tag content-hashes the build args, a changed pin is a changed tag — the next plain `ccc` rebuilds on its own.
+
+(A `Dockerfile.extra` is appended *below* that layer, so it sees the finished base. The trade is that an extra with its own `RUN` also rebuilds on a version bump — the base stays composable, at the cost of the one-layer property when you extend it.)
 
 `ccc` never contacts the npm registry on a normal run; only `ccc pin` does. A pin is always a concrete version: `ccc pin --to latest` resolves `latest` through the registry before storing it, because a moving dist-tag would hash to a stable image tag and freeze the image forever.
 

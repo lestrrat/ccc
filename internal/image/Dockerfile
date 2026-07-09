@@ -60,8 +60,11 @@ RUN if getent passwd ${UID} >/dev/null; then userdel -r "$(getent passwd ${UID} 
 #
 # CLAUDE_VERSION is declared immediately before its only use: a build arg
 # invalidates the layer cache from its declaration point onward, so bumping the
-# version rebuilds this layer alone and reuses apt/Go/golangci-lint above it.
-# Keep this the final RUN — anything appended below would rebuild on every bump.
+# version rebuilds this layer and reuses apt/Go/golangci-lint above it. This is
+# the last RUN in the BASE Dockerfile; a user's Dockerfile.extra is appended
+# below it (so the extra sees the finished base), which means an extra with its
+# own RUN also rebuilds on a version bump. That is the intended trade — the base
+# stays composable — not a bug.
 ARG CLAUDE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} && npm cache clean --force
 
