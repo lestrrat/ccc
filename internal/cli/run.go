@@ -229,10 +229,28 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 		out = append(out, container.Mount{Source: src, Target: src, ReadOnly: true})
 	}
 
-	// Shadow the host's native Claude Code. $HOME is mounted, and a login shell
-	// inside the container sources the host's ~/.profile, which prepends
-	// ~/.local/bin — so `claude` would otherwise resolve to the host's binary
-	// and, worse, self-update the host's installation from inside a container.
+	// Protect the host's native Claude Code from the container. Two distinct
+	// problems, two distinct mounts:
+	//
+	//  1. Resolution. $HOME is mounted, and a login shell inside the container
+	//     sources the host's ~/.profile, which prepends ~/.local/bin. `claude`
+	//     would resolve to the host's binary. The shim below shadows it.
+	//
+	//  2. Replacement. `claude install` (which Claude Code itself suggests when
+	//     its npm self-update fails) writes a temp file and rename()s it over
+	//     ~/.local/bin/claude. A read-only bind mount on the FILE does not stop
+	//     that: rename replaces the directory entry, and the directory is
+	//     writable. Only mounting the parent directories read-only does, and it
+	//     holds against `claude install --force` because EROFS is not a check
+	//     the installer can override.
+	for _, rel := range []string{".local/bin", ".local/share/claude"} {
+		src := filepath.Join(a.id.Home, rel)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		out = append(out, container.Mount{Source: src, Target: src, ReadOnly: true})
+	}
+
 	hostNative := filepath.Join(a.id.Home, image.HostNativeBin)
 	if _, err := os.Stat(hostNative); err == nil {
 		shim, err := image.EnsureShim(a.cfg.Root)

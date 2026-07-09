@@ -31,7 +31,12 @@ var baseDockerfile []byte
 const ClaudeBin = "/usr/local/bin/claude"
 
 // HostNativeBin is the host's native install location, shadowed inside the
-// container so nothing can reach the host's binary or self-update it.
+// container so `claude` never resolves to the host's binary.
+//
+// Shadowing governs resolution only. It does NOT prevent replacement: a
+// read-only bind mount on a file still allows rename(2) over its directory
+// entry. Preventing `claude install` from rewriting the host's installation
+// requires mounting the parent directories read-only; see cli.mounts.
 const HostNativeBin = ".local/bin/claude"
 
 // shim redirects any in-container lookup of the host's native claude to the

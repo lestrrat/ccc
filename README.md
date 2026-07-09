@@ -136,9 +136,11 @@ There is no `build` command: the image builds itself on first run, and whenever 
 | `~/.gitconfig` | `$HOME/.gitconfig` | ro |
 | `$SSH_AUTH_SOCK` | same path | rw |
 | gh config dir | `$HOME/.config/gh` | ro |
+| `~/.local/bin` | same path | ro |
+| `~/.local/share/claude` | same path | ro |
 | `~/.config/ccc/shim/claude` | `$HOME/.local/bin/claude` | ro |
 
-The last row shadows a host-native Claude Code, if you have one; see [Which Claude Code runs](#which-claude-code-runs).
+The last three protect a host-native Claude Code, if you have one; see [Which Claude Code runs](#which-claude-code-runs).
 
 The container user mirrors your UID, GID, username, and home directory, and roots are mounted at their **identical absolute paths**. Absolute paths therefore mean the same thing on both sides of the mount, and files written into your repositories are owned by you.
 
@@ -230,9 +232,13 @@ To add tooling without forking ccc, drop a `~/.config/ccc/Dockerfile.extra`; it 
 
 The image's, at `/usr/local/bin/claude`. ccc execs that absolute path.
 
-This matters because `$HOME` is mounted, so the container can see a host-native Claude Code at `~/.local/bin/claude`. A login shell inside the container sources the host's `~/.profile`, which prepends `~/.local/bin` — without care, `claude` would resolve to the *host's* binary, and its auto-updater would rewrite the host's installation from inside a container.
+This matters because `$HOME` is mounted, so the container can see a host-native Claude Code at `~/.local/bin/claude`. Two separate problems follow, and they need two separate defenses.
 
-ccc shadows that path with a shim (`~/.config/ccc/shim/claude`) that execs the image's binary. The host's install is unreachable from inside, and untouched.
+**Resolution.** A login shell inside the container sources the host's `~/.profile`, which prepends `~/.local/bin`, so a bare `claude` would run the *host's* binary. ccc shadows that path with a shim (`~/.config/ccc/shim/claude`) that execs the image's binary instead.
+
+**Replacement.** `claude install` — which Claude Code itself suggests when its npm self-update fails — writes a temp file and `rename()`s it over `~/.local/bin/claude`. A read-only bind mount on that *file* does not stop it: `rename` replaces the directory entry, and the directory is writable. Left alone, running `claude install` inside a ccc session downloads 257 MB into your host's `~/.local/share/claude/versions/` and repoints your host's symlink.
+
+So ccc mounts `~/.local/bin` and `~/.local/share/claude` **read-only**. That holds even against `claude install --force`, because `EROFS` is not a check the installer can override. The consequence: nothing inside the container can install into `~/.local/bin`. Your host binaries there stay visible and runnable, just not replaceable.
 
 ### Upgrading Claude Code
 
@@ -251,7 +257,11 @@ On the next `ccc`, that `version_to` becomes the profile's pin and one image lay
 ccc: Claude Code asked for 2.1.205 (have 2.1.204); rebuilding
 ```
 
-The container says what it wants; only the host can act on it. That permission failure is load-bearing twice over — it is also what stops the container from rewriting your host's installation through the mounted `$HOME`.
+The container says what it wants; only the host can act on it.
+
+That permission failure is load-bearing: it is both the signal ccc reads and the thing keeping the container out of `/usr/local`. The automatic updater cannot get past it — it uses the npm-global path and does not escalate, even though the container has passwordless `sudo`. (An agent that runs `sudo npm install -g` by hand does succeed, but `--rm` discards the layer, so the next run is back on the pinned version.)
+
+The escape hatch is the *native* installer, `claude install`, which targets `$HOME` rather than `/usr/local`. See [Which Claude Code runs](#which-claude-code-runs) for why `~/.local` is mounted read-only.
 
 ccc contacts no registry to do this. Claude Code already did the checking, so **its** `autoUpdates` setting is the on/off switch: set `"autoUpdates": false` in the profile's `settings.json` and nothing is ever asked for, so nothing is ever adopted. You are always one session behind — the session that discovers a release is the one whose update fails.
 
