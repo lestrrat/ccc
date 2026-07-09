@@ -21,6 +21,21 @@ Claude Code splits its state across two host paths:
 
 Renaming or symlinking `~/.claude` breaks, because `~/.claude.json` is left behind and stays shared across accounts. ccc mounts **both** from a per-profile directory, so switching accounts is total and atomic.
 
+### Why not CLAUDE_CONFIG_DIR
+
+Claude Code honors `CLAUDE_CONFIG_DIR`, and it does relocate `.claude.json`. It is still not enough: `~/.claude/CLAUDE.md` is read from the real home regardless.
+
+Traced with `CLAUDE_CONFIG_DIR=~/cfg` set, both files are opened and read:
+
+```
+openat("/home/u/cfg/CLAUDE.md",     O_RDONLY|O_NOCTTY) = 21
+openat("/home/u/.claude/CLAUDE.md", O_RDONLY|O_NOCTTY) = 19
+```
+
+So one account's global memory leaks into every other account's sessions. Claude Code finds its state through several mechanisms — `CLAUDE_CONFIG_DIR`, `$HOME/.claude/`, `$HOME/.claude.json` — and only a mount covers all of them at once, because it makes the *path itself* resolve to the profile no matter which mechanism does the lookup.
+
+Do not replace the mounts with an environment variable.
+
 ## Non-goals
 
 ccc is **not a security sandbox.** The container isolates Claude Code profiles, nothing else.
