@@ -106,7 +106,13 @@ func (a *app) exec(res profile.Resolution, cmd []string) error {
 		return err
 	}
 
-	tag, err := image.NewBuilder(rt, a.cfg, a.id).Ensure()
+	// The pin is per-profile, so the image tag is too. A changed pin is a
+	// changed tag, and Ensure() rebuilds — no version inspection needed.
+	b, err := a.builder(rt, res.Name)
+	if err != nil {
+		return err
+	}
+	tag, err := b.Ensure()
 	if err != nil {
 		return err
 	}

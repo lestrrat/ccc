@@ -53,14 +53,19 @@ func EnsureShim(root string) (string, error) {
 
 // Builder produces and caches the ccc image for one host identity.
 type Builder struct {
-	rt  container.Runtime
-	cfg *config.Config
-	id  container.Identity
+	rt      container.Runtime
+	cfg     *config.Config
+	id      container.Identity
+	version string
 }
 
 // NewBuilder returns a Builder. The receiver is immutable configuration.
-func NewBuilder(rt container.Runtime, cfg *config.Config, id container.Identity) *Builder {
-	return &Builder{rt: rt, cfg: cfg, id: id}
+//
+// version is the resolved Claude Code pin — a profile's override, else the
+// global one, else "". It is a separate parameter rather than read off cfg
+// because it varies per profile while cfg does not.
+func NewBuilder(rt container.Runtime, cfg *config.Config, id container.Identity, version string) *Builder {
+	return &Builder{rt: rt, cfg: cfg, id: id, version: version}
 }
 
 // dockerfile returns the effective Dockerfile: the embedded base with the
@@ -84,10 +89,23 @@ func (b *Builder) dockerfile() ([]byte, error) {
 
 func (b *Builder) buildArgs() map[string]string {
 	return map[string]string{
-		"UID":      strconv.Itoa(b.id.UID),
-		"GID":      strconv.Itoa(b.id.GID),
-		"USERNAME": b.id.User,
+		"UID":            strconv.Itoa(b.id.UID),
+		"GID":            strconv.Itoa(b.id.GID),
+		"USERNAME":       b.id.User,
+		"CLAUDE_VERSION": b.claudeVersion(),
 	}
+}
+
+// claudeVersion is the resolved pin, or npm's "latest" dist-tag when nothing is
+// pinned. Because the tag hashes the build args, a pinned version that changes
+// produces a new tag and Ensure() rebuilds; an unpinned "latest" hashes to a
+// stable tag and is therefore never revisited. That is deliberate: `ccc` must
+// not silently reinstall Claude Code behind the user's back.
+func (b *Builder) claudeVersion() string {
+	if b.version != "" {
+		return b.version
+	}
+	return config.DefaultClaudeVersion
 }
 
 // Tag is the content-addressed image tag. It covers the Dockerfile and the

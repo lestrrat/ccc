@@ -35,10 +35,6 @@ RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local \
       /usr/local/go/bin/go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest \
  && rm -rf /root/go /root/.cache/go-build
 
-# Claude Code. Installed globally under /usr/local so it survives the host
-# $HOME being mounted over the container's home directory at runtime.
-RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
-
 # Recreate the container user with the host's UID/GID so that (a) files written
 # into mounted repositories are owned by the invoking user and (b) getpwuid(3)
 # resolves, which docker's --user needs. The base image ships node:1000, which
@@ -49,6 +45,16 @@ RUN if getent passwd ${UID} >/dev/null; then userdel -r "$(getent passwd ${UID} 
  && useradd -m -u ${UID} -g ${GID} -s /bin/bash ${USERNAME} \
  && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
  && chmod 0440 /etc/sudoers.d/${USERNAME}
+
+# Claude Code, LAST. Installed globally under /usr/local so it survives the host
+# $HOME being mounted over the container's home directory at runtime.
+#
+# CLAUDE_VERSION is declared immediately before its only use: a build arg
+# invalidates the layer cache from its declaration point onward, so bumping the
+# version rebuilds this layer alone and reuses apt/Go/golangci-lint above it.
+# Keep this the final RUN — anything appended below would rebuild on every bump.
+ARG CLAUDE_VERSION=latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} && npm cache clean --force
 
 USER ${USERNAME}
 ENV HOME=/home/${USERNAME}

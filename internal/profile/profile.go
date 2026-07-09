@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/lestrrat-go/ccc/internal/config"
 )
@@ -47,6 +48,56 @@ func (s *Store) ClaudeJSON(name string) string { return filepath.Join(s.Dir(name
 
 // ConfigPath is the profile's profile.json.
 func (s *Store) ConfigPath(name string) string { return filepath.Join(s.Dir(name), "profile.json") }
+
+// VersionFile is the Claude Code pin, inside the profile's mounted claude/ dir.
+const VersionFile = ".ccc-claude-version"
+
+// VersionPath is the profile's Claude Code pin.
+func (s *Store) VersionPath(name string) string {
+	return filepath.Join(s.ClaudeDir(name), VersionFile)
+}
+
+// ClaudeVersion reads the profile's Claude Code pin. Returns "" when unpinned.
+//
+// This file lives in the profile's claude/ directory, which is mounted
+// read-write into the container — so the contained process can write it. Its
+// contents are validated here, before they ever reach a build arg. A malformed
+// pin is a hard error, never a silently-ignored value and never a shell string.
+func (s *Store) ClaudeVersion(name string) (string, error) {
+	path := s.VersionPath(name)
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read %s: %w", path, err)
+	}
+
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return "", nil
+	}
+	if err := config.ValidateClaudeVersion(v); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	return v, nil
+}
+
+// SetClaudeVersion writes the profile's Claude Code pin.
+func (s *Store) SetClaudeVersion(name string, version string) error {
+	if err := config.ValidateClaudeVersion(version); err != nil {
+		return err
+	}
+	if err := s.Materialize(name); err != nil {
+		return err
+	}
+	path := s.VersionPath(name)
+	if err := os.WriteFile(path, []byte(version+"\n"), 0o600); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	return nil
+}
 
 // Config loads the profile's profile.json.
 func (s *Store) Config(name string) (*config.Profile, error) {

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -35,7 +36,16 @@ type Image struct {
 	// ExtraDockerfile is appended verbatim to the base Dockerfile.
 	// Relative paths resolve against the ccc config directory.
 	ExtraDockerfile string `json:"extra_dockerfile,omitempty"`
+
+	// ClaudeVersion pins the Claude Code npm version. Empty means "latest",
+	// resolved once at build time and never revisited: ccc does not check the
+	// registry on a normal run. `ccc upgrade` records a concrete version here,
+	// which changes the image tag and triggers a one-layer rebuild.
+	ClaudeVersion string `json:"claude_version,omitempty"`
 }
+
+// DefaultClaudeVersion is the npm dist-tag used when nothing is pinned.
+const DefaultClaudeVersion = "latest"
 
 // Mounts controls what host state the container sees.
 type Mounts struct {
@@ -58,6 +68,24 @@ type Env struct {
 // small: it holds only settings Claude Code cannot know about.
 type Profile struct {
 	GhConfig string `json:"gh_config,omitempty"`
+}
+
+// claudeVersionRe matches npm's "latest" dist-tag or a plain semver.
+var claudeVersionRe = regexp.MustCompile(`^(latest|[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$`)
+
+// ValidateClaudeVersion rejects anything that is not a dist-tag or semver.
+//
+// The pin reaches `npm install -g pkg@${CLAUDE_VERSION}` inside a Dockerfile
+// RUN, where the shell would interpret `&&`, `;`, or backticks — and the build
+// runs as root. The per-profile pin lives in the profile's claude/ directory,
+// which IS mounted read-write into the container, so its contents are
+// attacker-reachable by definition. Validation is what makes that safe:
+// anything that is not a dist-tag or a semver is an error, never a build arg.
+func ValidateClaudeVersion(v string) error {
+	if !claudeVersionRe.MatchString(v) {
+		return fmt.Errorf("invalid claude version %q: want \"latest\" or a semver like \"2.1.205\"", v)
+	}
+	return nil
 }
 
 // Dir is a .ccc.json pinning a directory tree to a profile.
@@ -170,6 +198,12 @@ func (c *Config) applyDefaults() error {
 		}
 		c.Image.ExtraDockerfile = p
 	}
+
+	if c.Image.ClaudeVersion != "" {
+		if err := ValidateClaudeVersion(c.Image.ClaudeVersion); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -191,6 +225,26 @@ func Create(root string, name string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// SetClaudeVersion records image.claude_version in config.json, preserving
+// every other setting. Unlike Create, this is an explicit user action
+// (`ccc upgrade`), so an existing config is updated rather than left alone.
+func SetClaudeVersion(root string, version string) error {
+	if err := ValidateClaudeVersion(version); err != nil {
+		return err
+	}
+	path := filepath.Join(root, FileName)
+
+	// Read raw rather than reusing a loaded Config: applyDefaults() materializes
+	// derived values (mount roots, gh_config) that must not be frozen into the
+	// file as if the user had written them.
+	var raw Config
+	if err := readJSON(path, &raw); err != nil {
+		return err
+	}
+	raw.Image.ClaudeVersion = version
+	return writeJSON(path, &raw)
 }
 
 // LoadProfile reads profiles/<name>/profile.json. A missing file yields a

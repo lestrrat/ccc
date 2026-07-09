@@ -235,12 +235,30 @@ ccc shadows that path with a shim (`~/.config/ccc/shim/claude`) that execs the i
 ### Upgrading Claude Code
 
 ```sh
-ccc build --no-cache
+ccc upgrade                  # resolve the latest version, pin it, rebuild
+ccc upgrade --to 2.1.204     # pin a specific version
+ccc -p work upgrade          # pin just the "work" profile
 ```
 
-Claude Code auto-updates itself on the host, but not inside ccc: the image installs it under root-owned `/usr/local`, and the container runs as you, so the updater cannot write there. The image tag hashes the *Dockerfile text*, not what the Dockerfile pulls in, so an unchanged Dockerfile keeps reusing whatever version it first installed.
+Claude Code auto-updates itself on the host, but not inside ccc: the image installs it under root-owned `/usr/local`, and the container runs as you, so the updater cannot write there. That failure is load-bearing — it is what stops the container from rewriting your host installation through the mounted `$HOME`.
 
-`ccc build --no-cache` is therefore the upgrade path — it also refreshes `golangci-lint` and the base image.
+Instead, the version is an explicit pin. `CLAUDE_VERSION` is the last `ARG` in the Dockerfile, immediately before the only `RUN` that uses it, so bumping it invalidates **one layer**: apt, the Go toolchain, and `golangci-lint` above it are reused. And because the image tag content-hashes the build args, a changed pin is a changed tag — the next plain `ccc` rebuilds on its own.
+
+`ccc` never contacts the npm registry on a normal run. Only `ccc upgrade` does. An unpinned profile installs `latest` once, at first build, and then stays there forever until you upgrade: pinned means pinned.
+
+`ccc build --no-cache` still exists, for refreshing the base image and `golangci-lint`.
+
+#### Where the pin lives
+
+Per-profile, in the profile's own Claude Code directory:
+
+```
+~/.config/ccc/profiles/work/claude/.ccc-claude-version    # e.g. "2.1.205"
+```
+
+Falling back to `image.claude_version` in `config.json` when a profile has no pin. So profiles can run different Claude Code versions, and a profile carries its version with it.
+
+That file is inside a directory mounted **read-write** into the container, so the contained process can write it. Its contents become a build arg that is interpolated into a `RUN npm install -g pkg@${CLAUDE_VERSION}` executed as root. ccc therefore validates it on read: it must be `latest` or a plain semver. Anything else — `2.1.205; rm -rf /`, backticks, `$(...)`, newlines — is a hard error, never a silently ignored value and never a shell string.
 
 ## Runtime
 

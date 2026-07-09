@@ -13,6 +13,7 @@ import (
 
 	"github.com/lestrrat-go/ccc/internal/config"
 	"github.com/lestrrat-go/ccc/internal/container"
+	"github.com/lestrrat-go/ccc/internal/image"
 	"github.com/lestrrat-go/ccc/internal/profile"
 )
 
@@ -24,6 +25,7 @@ var Version = "dev"
 var reserved = map[string]func(*app, []string) error{
 	"profile": cmdProfile,
 	"build":   cmdBuild,
+	"upgrade": cmdUpgrade,
 	"doctor":  cmdDoctor,
 	"help":    cmdHelp,
 	"version": cmdVersion,
@@ -155,6 +157,36 @@ func (a *app) runtime() (container.Runtime, error) {
 	return container.Detect(a.cfg.Runtime)
 }
 
+// claudeVersion resolves the Claude Code pin for a profile: the profile's own
+// pin (~/.claude/.ccc-claude-version), else the global one. Pass "" for
+// commands that have no profile.
+//
+// The profile pin is read from a mounted, container-writable directory, so
+// Store.ClaudeVersion validates it. An invalid pin propagates as an error
+// rather than reaching a build arg.
+func (a *app) claudeVersion(name string) (string, error) {
+	if name == "" {
+		return a.cfg.Image.ClaudeVersion, nil
+	}
+	v, err := a.store.ClaudeVersion(name)
+	if err != nil {
+		return "", err
+	}
+	if v != "" {
+		return v, nil
+	}
+	return a.cfg.Image.ClaudeVersion, nil
+}
+
+// builder constructs an image Builder for the given profile ("" for none).
+func (a *app) builder(rt container.Runtime, name string) (*image.Builder, error) {
+	v, err := a.claudeVersion(name)
+	if err != nil {
+		return nil, err
+	}
+	return image.NewBuilder(rt, a.cfg, a.id, v), nil
+}
+
 func cmdVersion(_ *app, _ []string) error {
 	fmt.Println("ccc " + Version)
 	return nil
@@ -179,7 +211,8 @@ commands:
     --from <dir>             seed it from an existing ~/.claude
   profile list               list profiles ('*' marks default_profile)
   profile rm <name>          delete a profile and its credentials
-  build [--no-cache]         rebuild the container image
+  upgrade [--to <version>]   pin Claude Code and rebuild one image layer
+  build [--no-cache]         rebuild the container image from scratch
   doctor                     check runtime, image, mounts, profile
   version                    print version
   help                       print this help

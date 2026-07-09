@@ -1,13 +1,124 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/lestrrat-go/ccc/internal/config"
-	"github.com/lestrrat-go/ccc/internal/image"
+	"github.com/lestrrat-go/ccc/internal/npm"
+	"github.com/lestrrat-go/ccc/internal/profile"
 )
+
+// cmdUpgrade pins a Claude Code version and rebuilds. Because CLAUDE_VERSION is
+// declared as the last ARG in the Dockerfile, only the final layer is
+// invalidated: this costs one npm install, not a full image rebuild.
+//
+// Without --profile the pin is global; with it, the pin lives in that profile's
+// profile.json, so profiles can run different Claude Code versions.
+func cmdUpgrade(a *app, args []string) error {
+	var to string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--to":
+			if i+1 >= len(args) {
+				return fmt.Errorf("upgrade: --to needs a version")
+			}
+			to = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--to="):
+			to = strings.TrimPrefix(args[i], "--to=")
+		default:
+			return fmt.Errorf("upgrade: unexpected argument %q", args[i])
+		}
+	}
+
+	// Scope: an explicit --profile pins that profile; otherwise pin globally.
+	// Deliberately does NOT fall back to .ccc.json — pinning is a rare,
+	// deliberate act and must not silently depend on the current directory.
+	scope := a.globals.profile
+	if scope != "" && !a.store.Exists(scope) {
+		return fmt.Errorf("%q: %w", scope, profile.ErrNotExist)
+	}
+
+	if to == "" {
+		fmt.Fprintf(os.Stderr, "ccc: resolving latest %s from the npm registry\n", npm.ClaudeCode)
+		latest, err := npm.Latest(context.Background(), npm.ClaudeCode)
+		if err != nil {
+			return err
+		}
+		to = latest
+	}
+	if err := config.ValidateClaudeVersion(to); err != nil {
+		return err
+	}
+
+	current, err := a.claudeVersion(scope)
+	if err != nil {
+		return err
+	}
+	rt, err := a.runtime()
+	if err != nil {
+		return err
+	}
+
+	// Already pinned there AND the image exists: nothing to do. A matching pin
+	// with no image still needs the build.
+	if current == to {
+		b, err := a.builder(rt, scope)
+		if err != nil {
+			return err
+		}
+		tag, err := b.Tag()
+		if err != nil {
+			return err
+		}
+		if b.Exists(tag) {
+			fmt.Fprintf(os.Stderr, "ccc: already on %s\n", to)
+			return nil
+		}
+	}
+
+	if err := a.pin(scope, to); err != nil {
+		return err
+	}
+
+	b, err := a.builder(rt, scope)
+	if err != nil {
+		return err
+	}
+	tag, err := b.Tag()
+	if err != nil {
+		return err
+	}
+	if err := b.Build(tag, false); err != nil {
+		return err
+	}
+
+	where := "globally"
+	if scope != "" {
+		where = "for profile " + scope
+	}
+	if current == "" {
+		fmt.Fprintf(os.Stderr, "ccc: pinned Claude Code %s %s\n", to, where)
+	} else {
+		fmt.Fprintf(os.Stderr, "ccc: upgraded Claude Code %s -> %s %s\n", current, to, where)
+	}
+	return nil
+}
+
+// pin records the version globally, or in a profile when scope is non-empty.
+func (a *app) pin(scope string, version string) error {
+	if scope == "" {
+		if err := config.SetClaudeVersion(a.cfg.Root, version); err != nil {
+			return err
+		}
+		a.cfg.Image.ClaudeVersion = version
+		return nil
+	}
+	return a.store.SetClaudeVersion(scope, version)
+}
 
 func cmdBuild(a *app, args []string) error {
 	var noCache bool
@@ -24,7 +135,10 @@ func cmdBuild(a *app, args []string) error {
 	if err != nil {
 		return err
 	}
-	b := image.NewBuilder(rt, a.cfg, a.id)
+	b, err := a.builder(rt, a.globals.profile)
+	if err != nil {
+		return err
+	}
 	tag, err := b.Tag()
 	if err != nil {
 		return err
@@ -133,7 +247,10 @@ func cmdDoctor(a *app, _ []string) error {
 	}
 	fmt.Printf("runtime:      %s (%s)\n", rt.Name(), rt.Bin())
 
-	b := image.NewBuilder(rt, a.cfg, a.id)
+	b, err := a.builder(rt, a.globals.profile)
+	if err != nil {
+		return err
+	}
 	tag, err := b.Tag()
 	if err != nil {
 		return err
@@ -143,6 +260,15 @@ func cmdDoctor(a *app, _ []string) error {
 		status = "present"
 	}
 	fmt.Printf("image:        %s (%s)\n", tag, status)
+
+	pinned, err := a.claudeVersion(a.globals.profile)
+	if err != nil {
+		return err
+	}
+	if pinned == "" {
+		pinned = config.DefaultClaudeVersion + " (unpinned; `ccc upgrade` to pin)"
+	}
+	fmt.Printf("claude:       %s\n", pinned)
 
 	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
 		fmt.Printf("ssh agent:    %s\n", sock)
