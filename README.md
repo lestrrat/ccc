@@ -113,15 +113,17 @@ ccc -- --help                          # claude's help
 ccc -- doctor                          # `claude doctor`, not `ccc doctor`
 ```
 
-`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `profile`, `build`, `doctor`, `help`, `version`, `--help`, `-h`, `--profile`, `-p`, `--runtime`.
+`--` forces passthrough. It is only needed when a Claude Code argument collides with one of ccc's reserved words: `profile`, `upgrade`, `doctor`, `help`, `version`, `--help`, `-h`, `--profile`, `-p`, `--runtime`.
 
 Other commands:
 
 ```sh
-ccc build [--no-cache]   # rebuild the image
+ccc upgrade              # pin the latest Claude Code, rebuild one layer
 ccc doctor               # runtime, image, mounts, resolved profile
 ccc help                 # same as ccc --help
 ```
+
+There is no `build` command: the image builds itself on first run, and whenever the pin or `Dockerfile.extra` changes.
 
 ## What the container sees
 
@@ -246,7 +248,12 @@ Instead, the version is an explicit pin. `CLAUDE_VERSION` is the last `ARG` in t
 
 `ccc` never contacts the npm registry on a normal run. Only `ccc upgrade` does. An unpinned profile installs `latest` once, at first build, and then stays there forever until you upgrade: pinned means pinned.
 
-`ccc build --no-cache` still exists, for refreshing the base image and `golangci-lint`.
+The pin only invalidates the last layer, so it can never refresh the parts that float: the `node:22-bookworm` base, apt packages, and `golangci-lint@latest`. For those:
+
+```sh
+ccc upgrade --no-cache               # latest Claude Code + rebuild every layer
+ccc upgrade --no-cache --to 2.1.205  # keep this version, rebuild every layer
+```
 
 #### Where the pin lives
 

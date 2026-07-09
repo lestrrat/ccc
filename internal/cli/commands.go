@@ -19,6 +19,7 @@ import (
 // profile.json, so profiles can run different Claude Code versions.
 func cmdUpgrade(a *app, args []string) error {
 	var to string
+	var noCache bool
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--to":
@@ -29,6 +30,8 @@ func cmdUpgrade(a *app, args []string) error {
 			i++
 		case strings.HasPrefix(args[i], "--to="):
 			to = strings.TrimPrefix(args[i], "--to=")
+		case args[i] == "--no-cache":
+			noCache = true
 		default:
 			return fmt.Errorf("upgrade: unexpected argument %q", args[i])
 		}
@@ -64,8 +67,10 @@ func cmdUpgrade(a *app, args []string) error {
 	}
 
 	// Already pinned there AND the image exists: nothing to do. A matching pin
-	// with no image still needs the build.
-	if current == to {
+	// with no image still needs the build, and --no-cache always rebuilds —
+	// that is the only way to refresh the base image, apt, and golangci-lint,
+	// none of which the version pin can invalidate.
+	if current == to && !noCache {
 		b, err := a.builder(rt, scope)
 		if err != nil {
 			return err
@@ -92,7 +97,7 @@ func cmdUpgrade(a *app, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := b.Build(tag, false); err != nil {
+	if err := b.Build(tag, noCache); err != nil {
 		return err
 	}
 
@@ -118,32 +123,6 @@ func (a *app) pin(scope string, version string) error {
 		return nil
 	}
 	return a.store.SetClaudeVersion(scope, version)
-}
-
-func cmdBuild(a *app, args []string) error {
-	var noCache bool
-	for _, arg := range args {
-		switch arg {
-		case "--no-cache":
-			noCache = true
-		default:
-			return fmt.Errorf("build: unknown flag %q", arg)
-		}
-	}
-
-	rt, err := a.runtime()
-	if err != nil {
-		return err
-	}
-	b, err := a.builder(rt, a.globals.profile)
-	if err != nil {
-		return err
-	}
-	tag, err := b.Tag()
-	if err != nil {
-		return err
-	}
-	return b.Build(tag, noCache)
 }
 
 func cmdProfile(a *app, args []string) error {

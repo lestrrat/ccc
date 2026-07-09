@@ -24,7 +24,6 @@ var Version = "dev"
 // passthrough when a claude argument would collide with one of these.
 var reserved = map[string]func(*app, []string) error{
 	"profile": cmdProfile,
-	"build":   cmdBuild,
 	"upgrade": cmdUpgrade,
 	"doctor":  cmdDoctor,
 	"help":    cmdHelp,
@@ -211,11 +210,15 @@ commands:
     --from <dir>             seed it from an existing ~/.claude
   profile list               list profiles ('*' marks default_profile)
   profile rm <name>          delete a profile and its credentials
-  upgrade [--to <version>]   pin Claude Code and rebuild one image layer
-  build [--no-cache]         rebuild the container image from scratch
+  upgrade                    pin the latest Claude Code, rebuild one layer
+    --to <version>           pin a specific version instead
+    --no-cache               also rebuild every layer (base image, apt,
+                             golangci-lint) — the pin alone cannot refresh them
   doctor                     check runtime, image, mounts, profile
   version                    print version
   help                       print this help
+
+The image builds itself on first run; there is no build command.
 
 There is no login command: a profile with no credentials makes Claude Code
 run its own setup. To re-authenticate one, run ` + "`ccc -p <name> -- auth login`" + `.

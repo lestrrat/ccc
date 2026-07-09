@@ -101,11 +101,13 @@ func TestParseGlobals(t *testing.T) {
 }
 
 func TestReservedWordsAreDispatchable(t *testing.T) {
-	for _, name := range []string{"profile", "build", "doctor", "help", "version"} {
+	for _, name := range []string{"profile", "upgrade", "doctor", "help", "version"} {
 		require.Contains(t, reserved, name)
 	}
-	// Claude Code's own setup handles authentication; ccc must not shadow the
-	// `claude auth ...` subcommand with one of its own.
+	// Every reserved word is a claude argument that needs `--` to pass through,
+	// so ccc keeps the set minimal. `build` folded into `upgrade --no-cache`;
+	// `login` belongs to `claude auth`.
+	require.NotContains(t, reserved, "build")
 	require.NotContains(t, reserved, "login")
 	require.NotContains(t, reserved, "auth")
 }
