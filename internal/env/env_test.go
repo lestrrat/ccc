@@ -16,6 +16,7 @@ func TestFilter(t *testing.T) {
 		"PWD=/home/u/src",
 		"SSH_AUTH_SOCK=/run/agent.sock",
 		"ANTHROPIC_API_KEY=sk-ant-secret",
+		"CLAUDE_CONFIG_DIR=/tmp/shared",
 		"ANTHROPIC_AUTH_TOKEN=tok",
 		"MALFORMED",
 		"=novalue",
@@ -38,6 +39,7 @@ func TestFilter(t *testing.T) {
 		got := env.Filter(environ, nil, nil)
 		require.NotContains(t, got, "ANTHROPIC_API_KEY")
 		require.NotContains(t, got, "ANTHROPIC_AUTH_TOKEN")
+		require.NotContains(t, got, "CLAUDE_CONFIG_DIR", "would relocate profile state and split the account boundary")
 	})
 
 	t.Run("drops SSH_AUTH_SOCK; run logic re-adds it", func(t *testing.T) {

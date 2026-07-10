@@ -253,6 +253,7 @@ Always dropped:
 |----------|-----|
 | `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `PWD`, `OLDPWD`, `TMPDIR`, `TMP`, `TEMP`, `HOSTNAME` | container-managed; the host values are wrong inside |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` | would override the profile's own credentials and silently route every profile to a single account |
+| `CLAUDE_CONFIG_DIR` | Claude Code honors it, so a forwarded value relocates state out of the mounted profile and splits the account boundary |
 
 `SSH_AUTH_SOCK` is forwarded with its socket bind-mounted at the same path.
 
