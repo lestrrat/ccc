@@ -363,7 +363,7 @@ ccc: Claude Code asked for 2.1.205 (have 2.1.204); rebuilding
 
 The container says what it wants; only the host can act on it.
 
-That permission failure is load-bearing: it is both the signal ccc reads and the thing keeping the container out of `/usr/local`. The automatic updater cannot get past it — it uses the npm-global path and does not escalate, even though the container has passwordless `sudo`. (An agent that runs `sudo npm install -g` by hand does succeed, but `--rm` discards the layer, so the next run is back on the pinned version.)
+That permission failure is load-bearing: it is both the signal ccc reads and the thing keeping the container out of `/usr/local`. The automatic updater cannot get past it — it uses the npm-global path and does not escalate, and the image ships no `sudo` to escalate with. (A profile that adds `sudo` via `Dockerfile.extra` and runs `sudo npm install -g` by hand does succeed, but `--rm` discards the layer, so the next run is back on the pinned version.)
 
 The escape hatch is the *native* installer, `claude install`, which targets `$HOME` rather than `/usr/local`. See [Which Claude Code runs](#which-claude-code-runs) for why `~/.local` is mounted read-only.
 
