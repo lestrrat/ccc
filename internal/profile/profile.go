@@ -220,7 +220,14 @@ func (s *Store) Materialize(name string) error {
 	}
 
 	path := s.ClaudeJSON(name)
-	if _, err := os.Stat(path); err == nil {
+	// Lstat, not Stat: an existing claude.json must be a real regular file, not a
+	// symlink os.Stat would follow. A pre-existing claude.json -> /outside link
+	// would otherwise pass the exists check here and survive to be bind-mounted at
+	// $HOME/.claude.json in the container. Reject any non-regular existing entry.
+	if fi, err := os.Lstat(path); err == nil {
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("%s must be a regular file, not %s", path, fi.Mode().Type())
+		}
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("failed to stat %s: %w", path, err)

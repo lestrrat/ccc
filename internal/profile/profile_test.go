@@ -36,6 +36,33 @@ func TestMaterializeIsIdempotent(t *testing.T) {
 	require.JSONEq(t, `{"keep":1}`, string(b), "must not clobber existing state")
 }
 
+// A pre-existing claude.json that is a symlink to an outside file must be
+// rejected, not accepted: os.Stat would follow the link and report it exists,
+// leaving the attacker link in place to be bind-mounted at $HOME/.claude.json.
+// Materialize lstat's it and requires a regular file, so Seed's no-sidecar path
+// (which returns before any O_NOFOLLOW copy) fails instead of leaving the link.
+func TestMaterializeRejectsSymlinkedClaudeJSON(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
+
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{"secret":1}`), 0o600))
+	require.NoError(t, os.Symlink(outside, s.ClaudeJSON("work")))
+
+	require.Error(t, s.Materialize("work"), "a symlinked claude.json must be rejected")
+
+	// Seed's no-sidecar path funnels through Materialize, so it must fail too and
+	// leave the attacker link in place rather than reporting success.
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.Error(t, s.Seed("work", src), "seeding onto a symlinked claude.json must fail")
+
+	// The outside target must be untouched: neither followed-and-truncated nor read.
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"secret":1}`, string(b), "symlink target must not be written through")
+}
+
 func TestCreateRejectsDuplicate(t *testing.T) {
 	s, _ := newStore(t, "work")
 	require.ErrorContains(t, s.Create("work"), "already exists")
