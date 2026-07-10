@@ -57,7 +57,11 @@ func DefaultDeny() []string {
 
 // Filter selects the host environment entries to forward. environ is in
 // os.Environ form ("K=V"). extraDeny extends the built-in denylist; allow
-// re-admits a denied name and wins over every deny rule.
+// re-admits a denied name and wins over every deny rule, except for the
+// containerManaged set, which allow can never re-admit: forwarding the host's
+// HOME/PATH/etc. points the container at paths that do not match the mounted
+// profile, so Claude would write credentials into the wrong home and defeat the
+// account boundary ccc exists to enforce.
 func Filter(environ []string, extraDeny []string, allow []string) map[string]string {
 	denied := make(map[string]struct{})
 	for _, k := range DefaultDeny() {
@@ -66,7 +70,14 @@ func Filter(environ []string, extraDeny []string, allow []string) map[string]str
 	for _, k := range extraDeny {
 		denied[k] = struct{}{}
 	}
+	managed := make(map[string]struct{}, len(containerManaged))
+	for _, k := range containerManaged {
+		managed[k] = struct{}{}
+	}
 	for _, k := range allow {
+		if _, isManaged := managed[k]; isManaged {
+			continue
+		}
 		delete(denied, k)
 	}
 

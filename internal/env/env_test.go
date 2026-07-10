@@ -7,6 +7,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// containerManagedNames mirrors the unexported containerManaged denylist in
+// env.go; env.allow must never be able to re-admit any of them.
+var containerManagedNames = []string{
+	"HOME", "PATH", "USER", "LOGNAME", "SHELL",
+	"PWD", "OLDPWD", "TMPDIR", "TMP", "TEMP", "HOSTNAME",
+}
+
 func TestFilter(t *testing.T) {
 	environ := []string{
 		"GIT_SSH_COMMAND=ssh -i /home/u/.ssh/id_work",
@@ -68,6 +75,20 @@ func TestFilter(t *testing.T) {
 	t.Run("allow re-admits a denied var", func(t *testing.T) {
 		got := env.Filter(environ, nil, []string{"ANTHROPIC_API_KEY"})
 		require.Equal(t, "sk-ant-secret", got["ANTHROPIC_API_KEY"])
+	})
+
+	t.Run("allow cannot re-admit container-managed vars", func(t *testing.T) {
+		// A hostile HOME plus allow:["HOME"] must not forward it: the container
+		// derives its own HOME to match the mounted profile, and honoring the host
+		// value would route credentials to the wrong home and break the account
+		// boundary (S2-10).
+		got := env.Filter([]string{"HOME=/tmp/fake"}, nil, []string{"HOME"})
+		require.NotContains(t, got, "HOME")
+
+		all := env.Filter(environ, nil, containerManagedNames)
+		for _, k := range containerManagedNames {
+			require.NotContains(t, all, k, "allow must never re-admit a container-managed var")
+		}
 	})
 
 	t.Run("allow wins over extra deny", func(t *testing.T) {

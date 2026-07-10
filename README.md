@@ -257,7 +257,7 @@ Always dropped:
 
 `SSH_AUTH_SOCK` is forwarded **only when it points at an actual socket**, with that socket bind-mounted read-only at the same path. A value that is a directory or file (a hostile `SSH_AUTH_SOCK=$HOME` or `=~/.ssh/id_rsa`) is refused rather than mounted.
 
-Extend with `env.deny`; re-admit a dropped variable with `env.allow` (which wins over every deny rule) — except `SSH_AUTH_SOCK`, which ccc always controls itself: it is forwarded only after socket validation (above), so `env.allow` cannot re-admit a raw, unvalidated value.
+Extend with `env.deny`; re-admit a dropped variable with `env.allow` (which wins over every deny rule) — except the two categories ccc controls itself. The **container-managed** variables above (`HOME`, `PATH`, `USER`, …) can never be re-admitted: forwarding the host `HOME`/`PATH` points the container away from the mounted profile, so Claude would write credentials into the wrong home and break the account boundary. And `SSH_AUTH_SOCK` is forwarded only after socket validation (above), so `env.allow` cannot re-admit a raw, unvalidated value.
 
 ## Git and SSH identity
 
