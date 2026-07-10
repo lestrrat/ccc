@@ -74,5 +74,13 @@ RUN if getent passwd ${UID} >/dev/null; then userdel -r "$(getent passwd ${UID} 
 ARG CLAUDE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} && npm cache clean --force
 
+# Stamp the full content hash (Dockerfile + build args) that ccc computed for
+# this image into an immutable label. ccc verifies this label before reusing an
+# image so a local image merely tagged ccc:<hash> cannot impersonate a genuine
+# build. CCC_CONTENT_HASH is declared last, and after all other build args, so
+# it never influences the hash it carries; ccc passes it at build time only.
+ARG CCC_CONTENT_HASH=
+LABEL ccc.content-hash=${CCC_CONTENT_HASH}
+
 USER ${USERNAME}
 ENV HOME=${HOME}

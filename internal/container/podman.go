@@ -24,6 +24,6 @@ func (p *podman) BuildArgs(tag string, contextDir string, buildArgs map[string]s
 	return buildArgsFor(p.bin, tag, contextDir, buildArgs, noCache)
 }
 
-func (p *podman) InspectArgs(tag string) []string {
-	return []string{p.bin, "image", "exists", tag}
+func (p *podman) InspectLabelArgs(tag, label string) []string {
+	return inspectLabelArgs(p.bin, tag, label)
 }
