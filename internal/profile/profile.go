@@ -71,12 +71,9 @@ func (s *Store) VersionPath(name string) string {
 func (s *Store) ClaudeVersion(name string) (string, error) {
 	path := s.VersionPath(name)
 
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", nil
-		}
-		return "", fmt.Errorf("failed to read %s: %w", path, err)
+	b, err := config.ReadStateFile(path)
+	if err != nil || b == nil {
+		return "", err
 	}
 
 	v := strings.TrimSpace(string(b))
@@ -122,12 +119,12 @@ func (s *Store) UpdateResultPath(name string) string {
 func (s *Store) RequestedClaudeVersion(name string) (string, error) {
 	path := s.UpdateResultPath(name)
 
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", nil
-		}
-		return "", fmt.Errorf("failed to read %s: %w", path, err)
+	// This file is Claude Code's, not ccc's. A corrupt, oversized, or FIFO
+	// update record must never brick a run — ignore any read/parse trouble and
+	// treat it as "no pending upgrade" (the same tolerance as the parse below).
+	b, err := config.ReadStateFile(path)
+	if err != nil || b == nil {
+		return "", nil
 	}
 
 	var r updateResult

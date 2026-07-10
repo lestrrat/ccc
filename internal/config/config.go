@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // DirConfigName is the per-directory config file naming a profile.
@@ -188,17 +190,58 @@ func DefaultRoot() (string, error) {
 
 // readJSON decodes path into v. A missing file leaves v untouched.
 func readJSON(path string, v any) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("failed to read %s: %w", path, err)
+	b, err := ReadStateFile(path)
+	if err != nil || b == nil {
+		return err
 	}
 	if err := json.Unmarshal(b, v); err != nil {
 		return fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 	return nil
+}
+
+// MaxStateFileSize caps every ccc state file. These files (config.json,
+// .ccc.json, the pin, the update record) are tiny; the cap exists because some
+// of them live in container-writable mounts, so an unbounded os.ReadFile on the
+// host would let a contained process OOM or hang (a 100G file, or a FIFO) the
+// host ccc process.
+const MaxStateFileSize = 4 << 20 // 4 MiB
+
+// ReadStateFile reads a ccc state file with the safety a container-writable
+// source demands: it must be a regular file (not a FIFO/device/dir), and the
+// read is bounded by MaxStateFileSize. A missing file returns (nil, nil).
+//
+// The file is opened O_NONBLOCK and fstat'd through the returned descriptor, not
+// pre-Lstat'd by path: a container-writable directory could swap a regular file
+// for a FIFO/symlink between an Lstat and the open (TOCTOU). O_NONBLOCK also
+// means opening a FIFO returns immediately instead of blocking, so the
+// regular-file check can then reject it.
+func ReadStateFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat %s: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+
+	b, err := io.ReadAll(io.LimitReader(f, MaxStateFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	if len(b) > MaxStateFileSize {
+		return nil, fmt.Errorf("%s exceeds the %d-byte limit", path, MaxStateFileSize)
+	}
+	return b, nil
 }
 
 // writeJSON marshals v and writes it to path via WriteAtomic.
