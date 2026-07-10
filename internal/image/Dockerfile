@@ -20,7 +20,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       less \
       openssh-client \
       ripgrep \
-      sudo \
  && rm -rf /var/lib/apt/lists/*
 
 # gh CLI, from GitHub's own apt repository.
@@ -50,16 +49,18 @@ RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local \
 # space (rare, but the values are the host's, unvalidated) would otherwise
 # field-split and break useradd. `mkdir -p $(dirname $HOME)` because useradd -m
 # does not create missing parents, and a host home may be nested (/var/home/x,
-# /Users/x) with no parent in the image. The sudoers drop-in is a FIXED,
-# dot-free filename: sudo ignores any /etc/sudoers.d file whose name contains a
-# `.`, so a username like "john.doe" would otherwise silently lose sudo.
+# /Users/x) with no parent in the image.
+#
+# No sudo is installed or granted: with rootful docker (no user-namespace
+# remapping and no --security-opt no-new-privileges), passwordless sudo would
+# let the container write/chown host bind-mount files as real root, defeating
+# ccc's run-as-host-UID ownership design. A profile that genuinely needs sudo
+# adds it via Dockerfile.extra.
 RUN if getent passwd ${UID} >/dev/null; then userdel -r "$(getent passwd ${UID} | cut -d: -f1)" || true; fi \
  && if getent group ${GID} >/dev/null; then groupdel "$(getent group ${GID} | cut -d: -f1)" || true; fi \
  && groupadd -g ${GID} "${USERNAME}" \
  && mkdir -p "$(dirname "${HOME}")" \
- && useradd -u ${UID} -g ${GID} -s /bin/bash -d "${HOME}" -m "${USERNAME}" \
- && printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${USERNAME}" > /etc/sudoers.d/ccc \
- && chmod 0440 /etc/sudoers.d/ccc
+ && useradd -u ${UID} -g ${GID} -s /bin/bash -d "${HOME}" -m "${USERNAME}"
 
 # Claude Code, LAST. Installed globally under /usr/local so it survives the host
 # $HOME being mounted over the container's home directory at runtime.
