@@ -38,6 +38,29 @@ func TestMaterializeIsIdempotent(t *testing.T) {
 	require.JSONEq(t, `{"keep":1}`, string(b), "must not clobber existing state")
 }
 
+// Seed writes claude.json 0600, so an existing one must not stay wider. A 0644
+// file copied in by hand (or predating that rule) holds the same credentials, so
+// Materialize tightens it in place rather than leaving it group/world-readable.
+func TestMaterializeTightensWideClaudeJSON(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+	require.NoError(t, os.Chmod(s.ClaudeJSON("work"), 0o644))
+
+	require.NoError(t, s.Materialize("work"))
+
+	fi, err := os.Stat(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o600), fi.Mode().Perm(),
+		"an existing group/world-readable claude.json must be tightened to 0600")
+
+	// Tightening must not clobber the contents.
+	require.NoError(t, os.WriteFile(s.ClaudeJSON("work"), []byte(`{"keep":1}`), 0o644))
+	require.NoError(t, s.Materialize("work"))
+	b, err := os.ReadFile(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"keep":1}`, string(b))
+}
+
 // A pre-existing claude.json that is a symlink to an outside file must be
 // rejected, not accepted: os.Stat would follow the link and report it exists,
 // leaving the attacker link in place to be bind-mounted at $HOME/.claude.json.

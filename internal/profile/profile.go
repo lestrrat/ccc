@@ -232,9 +232,20 @@ func (s *Store) Materialize(name string) error {
 
 	path := s.ClaudeJSON(name)
 	// ValidateMountSources already lstat'd claude.json and accepted it (or errored
-	// out above). It exists and is a private regular file, or it does not exist yet
+	// out above): it exists as a single-link regular file, or it does not exist yet
 	// and is ours to seed. Re-lstat only to distinguish those two cases.
-	if _, err := os.Lstat(path); err == nil {
+	if fi, err := os.Lstat(path); err == nil {
+		// Validation proves it is not a symlink or hard link, but says nothing about
+		// its mode. claude.json holds credentials, and Seed writes it 0600 — an
+		// existing 0644 one (copied in by hand, or predating that rule) must not stay
+		// group/world-readable. Tighten it here rather than rejecting it: this is
+		// ccc's own file, so widening is a bug to repair, not a reason to refuse the
+		// run. check stays non-mutating and green, because nothing is actually wrong.
+		if fi.Mode().Perm()&0o077 != 0 {
+			if err := os.Chmod(path, 0o600); err != nil {
+				return fmt.Errorf("failed to tighten %s to 0600: %w", path, err)
+			}
+		}
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("failed to stat %s: %w", path, err)
