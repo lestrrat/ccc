@@ -196,8 +196,8 @@ func TestSymlinkedCacheDirRefusedOnBothPaths(t *testing.T) {
 	outside := t.TempDir()
 	require.NoError(t, os.Symlink(outside, store.CacheDir("p")))
 
-	// Check path: cmdCheck calls ValidateMountSources before preflight.
-	require.Error(t, store.ValidateMountSources("p"), "check must refuse a symlinked cache dir")
+	// Check path: cmdCheck calls ValidateCacheSource when mounts.cache is set.
+	require.Error(t, store.ValidateCacheSource("p"), "check must refuse a symlinked cache dir")
 	// Run path: exec calls MaterializeCache before preflight.
 	_, err := store.MaterializeCache("p")
 	require.Error(t, err, "run must refuse a symlinked cache dir")

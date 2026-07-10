@@ -268,11 +268,11 @@ func (s *Store) MaterializeCache(name string) (string, error) {
 		return "", err
 	}
 	// The store root is the trusted root for the symlink guard below; it must
-	// exist as a real directory before ValidateMountSources can walk down from it.
+	// exist as a real directory before the guard can walk down from it.
 	if err := os.MkdirAll(s.root, 0o700); err != nil {
 		return "", fmt.Errorf("failed to create profile store: %w", err)
 	}
-	if err := s.ValidateMountSources(name); err != nil {
+	if err := s.ValidateCacheSource(name); err != nil {
 		return "", err
 	}
 	dir := s.CacheDir(name)
@@ -280,6 +280,52 @@ func (s *Store) MaterializeCache(name string) (string, error) {
 		return "", fmt.Errorf("failed to create profile cache: %w", err)
 	}
 	return dir, nil
+}
+
+// ValidateCacheSource is ValidateMountSources for the cache/ directory, kept
+// separate because cache/ is a mount source only when mounts.cache is enabled.
+// Folding it into ValidateMountSources would fail a cache-disabled run over a
+// stray cache/ entry that run would never mount or create. Callers validate it
+// exactly where they mount it: MaterializeCache, and cmdCheck when the same
+// mounts.cache flag is set. Non-mutating, like ValidateMountSources.
+func (s *Store) ValidateCacheSource(name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	if err := s.validateStoreRoot(); err != nil || !s.rootExists() {
+		return err
+	}
+	// cache/ is bind-mounted READ-WRITE at $HOME/.cache. Like claude/, a pre-existing
+	// cache/ -> /outside symlink would be followed by os.MkdirAll and mount the
+	// outside target into the container; a plain file there would let check pass and
+	// only the run fail. A not-yet-created cache/ stops the walk (nothing to reject).
+	if err := ensureNoSymlinkPath(s.root, s.CacheDir(name)); err != nil {
+		return err
+	}
+	return requireDirIfExists(s.CacheDir(name))
+}
+
+// rootExists reports whether the store root is present. An absent root means no
+// profile has been materialized: there is nothing on disk to validate.
+func (s *Store) rootExists() bool {
+	_, err := os.Lstat(s.root)
+	return err == nil
+}
+
+// validateStoreRoot requires the store root, when present, to be a real directory:
+// it is the trusted root every symlink walk descends from.
+func (s *Store) validateStoreRoot() error {
+	fi, err := os.Lstat(s.root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat %s: %w", s.root, err)
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("profile store %s is not a real directory", s.root)
+	}
+	return nil
 }
 
 // ValidateMountSources rejects a profile whose bind-mount sources would escape
@@ -297,13 +343,11 @@ func (s *Store) ValidateMountSources(name string) error {
 	}
 	// The store root is the trusted root for the symlink walk. If it does not
 	// exist yet, no profile has been materialized: nothing to validate.
-	if fi, err := os.Lstat(s.root); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("failed to stat %s: %w", s.root, err)
-	} else if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
-		return fmt.Errorf("profile store %s is not a real directory", s.root)
+	if err := s.validateStoreRoot(); err != nil {
+		return err
+	}
+	if !s.rootExists() {
+		return nil
 	}
 
 	// The claude/ directory is bind-mounted READ-WRITE at $HOME/.claude, so it —
@@ -320,18 +364,10 @@ func (s *Store) ValidateMountSources(name string) error {
 		return err
 	}
 
-	// The cache/ directory is the profile's THIRD mount source: it is bind-mounted
-	// READ-WRITE at $HOME/.cache when mounts.cache is enabled. Like claude/, a
-	// pre-existing cache/ -> /outside symlink would be followed by os.MkdirAll and
-	// mount the outside target read-write into the container, escaping the profile
-	// boundary. Guard it with the same walk so check and run agree; a not-yet-
-	// created cache/ stops the walk (nothing to reject).
-	if err := ensureNoSymlinkPath(s.root, s.CacheDir(name)); err != nil {
-		return err
-	}
-	if err := requireDirIfExists(s.CacheDir(name)); err != nil {
-		return err
-	}
+	// cache/ is deliberately NOT validated here: it is a mount source only when
+	// mounts.cache is enabled, so ValidateCacheSource is called by the paths that
+	// actually mount it. Validating it unconditionally would fail a cache-disabled
+	// run over a stray cache/ entry that run would never mount or create.
 
 	path := s.ClaudeJSON(name)
 	// Lstat, not Stat: an existing claude.json must be a real regular file, not a

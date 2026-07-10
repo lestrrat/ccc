@@ -177,14 +177,18 @@ func TestValidateMountSources(t *testing.T) {
 		require.ErrorContains(t, s.ValidateMountSources("work"), "not a directory")
 	})
 
-	t.Run("rejects a regular file at cache/", func(t *testing.T) {
+	// cache/ is a mount source only when mounts.cache is on, so ValidateMountSources
+	// must ignore it: a cache-disabled run never mounts or creates cache/, and must
+	// not fail over a stray entry there.
+	// cache/ is a mount source only when mounts.cache is on, so ValidateMountSources
+	// must ignore it: a cache-disabled run never mounts or creates cache/, and must
+	// not fail over a stray entry there.
+	t.Run("ignores cache/ entirely", func(t *testing.T) {
 		s, _ := newStore(t)
 		require.NoError(t, s.Materialize("work"))
-		require.NoError(t, os.WriteFile(s.CacheDir("work"), []byte("x"), 0o600))
-		require.ErrorContains(t, s.ValidateMountSources("work"), "not a directory")
-		// And a real run agrees: it refuses the same path rather than mounting it.
-		_, err := s.MaterializeCache("work")
-		require.Error(t, err, "run must refuse a regular file at cache/ like check does")
+		require.NoError(t, os.Symlink(t.TempDir(), s.CacheDir("work")))
+		require.NoError(t, s.ValidateMountSources("work"),
+			"a cache-disabled run must not fail over a cache/ it never mounts")
 	})
 
 	t.Run("rejects a symlinked claude.json", func(t *testing.T) {
@@ -204,15 +208,39 @@ func TestValidateMountSources(t *testing.T) {
 		require.NoError(t, os.Link(outside, s.ClaudeJSON("work")))
 		require.Error(t, s.ValidateMountSources("work"), "check must reject a hard-linked claude.json like a run does")
 	})
+}
 
-	t.Run("rejects a symlinked cache dir", func(t *testing.T) {
+// ValidateCacheSource is what the cache-enabled paths call: MaterializeCache on a
+// run, and cmdCheck under the same mounts.cache flag. It must reject exactly what
+// would escape the profile if bind-mounted read-write at $HOME/.cache.
+func TestValidateCacheSource(t *testing.T) {
+	t.Run("no-op success before the cache exists", func(t *testing.T) {
 		s, _ := newStore(t)
 		require.NoError(t, s.Materialize("work"))
-		// cache/ is the third mount source, bind-mounted read-write at $HOME/.cache.
-		// A cache/ -> /outside symlink would otherwise be followed and its target
-		// mounted into the container, escaping the profile boundary.
-		require.NoError(t, os.Symlink(t.TempDir(), s.CacheDir("work")))
-		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked cache dir like a run does")
+		require.NoError(t, s.ValidateCacheSource("work"))
+	})
+
+	t.Run("rejects a symlinked cache/", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		outside := t.TempDir()
+		require.NoError(t, os.Symlink(outside, s.CacheDir("work")))
+		require.Error(t, s.ValidateCacheSource("work"), "a symlinked cache/ must be rejected")
+		_, err := s.MaterializeCache("work")
+		require.Error(t, err, "the run path must refuse it too")
+		entries, err := os.ReadDir(outside)
+		require.NoError(t, err)
+		require.Empty(t, entries, "must not write through the symlinked cache/")
+	})
+
+	t.Run("rejects a regular file at cache/", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		require.NoError(t, os.WriteFile(s.CacheDir("work"), []byte("x"), 0o600))
+		require.ErrorContains(t, s.ValidateCacheSource("work"), "not a directory")
+		// And a real run agrees: it refuses the same path rather than mounting it.
+		_, err := s.MaterializeCache("work")
+		require.Error(t, err, "run must refuse a regular file at cache/ like check does")
 	})
 }
 

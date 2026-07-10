@@ -58,6 +58,15 @@ func cmdCheck(a *app, args []string) error {
 		step("mount sources", err, "")
 		return errFailed(failed)
 	}
+	// cache/ is a mount source only when mounts.cache is set, so validate it under
+	// the same flag the run mounts it under — never for a cache-disabled profile,
+	// which would fail over a stray cache/ entry the run would never touch.
+	if a.cfg.Mounts.Cache {
+		if err := a.store.ValidateCacheSource(res.Name); err != nil {
+			step("mount sources", err, "")
+			return errFailed(failed)
+		}
+	}
 
 	pinned, err := a.claudeVersion(res.Name)
 	if err != nil {
