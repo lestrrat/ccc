@@ -188,6 +188,48 @@ func TestSeedDoesNotFollowSymlinkedDestFile(t *testing.T) {
 	require.Equal(t, "KEEP", string(b), "symlink target must not be truncated or overwritten")
 }
 
+// The profile's claude/ destination root being itself a symlink to an outside
+// directory must be rejected before anything is copied: without checking the
+// root, Seed would write the whole tree straight through it. ensureNoSymlinkPath
+// lstat's the root first.
+func TestSeedRejectsSymlinkedDestRoot(t *testing.T) {
+	s, _ := newStore(t)
+
+	// Pre-create the profile dir and point its claude/ root at an outside dir.
+	require.NoError(t, os.MkdirAll(s.Dir("work"), 0o700))
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, s.ClaudeDir("work")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "CLAUDE.md"), []byte("# hi"), 0o600))
+
+	require.Error(t, s.Seed("work", src), "seeding through a symlinked dest root must fail")
+	_, err := os.Stat(filepath.Join(outside, "CLAUDE.md"))
+	require.ErrorIs(t, err, os.ErrNotExist, "must not write through the symlinked root")
+}
+
+// A pre-existing claude/agents -> /outside symlink must not let DIRECTORY
+// creation for a source agents/nested/ tree run MkdirAll straight through it,
+// creating /outside/nested. Directory creation goes through the same symlink
+// guard as file copies. Unlike TestSeedRejectsSymlinkedDestParent (which reaches
+// copyFile via a file directly under agents/), this drives copyTree's dir branch.
+func TestSeedRejectsSymlinkedDestDirCreation(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, filepath.Join(s.ClaudeDir("work"), "agents")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "agents", "nested"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "agents", "nested", "a.md"), []byte("agent"), 0o600))
+
+	require.Error(t, s.Seed("work", src), "creating a dir through a symlinked parent must fail")
+	_, err := os.Stat(filepath.Join(outside, "nested"))
+	require.ErrorIs(t, err, os.ErrNotExist, "must not create the nested dir through the symlink")
+}
+
 func TestListAndRemove(t *testing.T) {
 	s, _ := newStore(t, "zeta", "alpha")
 

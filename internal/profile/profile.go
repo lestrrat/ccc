@@ -318,6 +318,12 @@ func copyTree(src string, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
+			// Route directory creation through the same symlink guard as files:
+			// a pre-existing claude/agents -> /outside symlink must not let
+			// MkdirAll create /outside/nested, and dst itself must be a real dir.
+			if err := ensureNoSymlinkPath(dst, target); err != nil {
+				return err
+			}
 			return os.MkdirAll(target, 0o700)
 		}
 		// Skip sockets, devices, and dangling symlinks; they are runtime
@@ -329,20 +335,30 @@ func copyTree(src string, dst string) error {
 	})
 }
 
-// ensureNoSymlinkParent rejects a destination that would be reached through a
-// symlinked ancestor directory. O_NOFOLLOW guards only the FINAL component, so a
-// pre-existing symlink among dst's parents (e.g. a hostile claude/agents ->
-// /outside in a pre-populated store) would still let the copy land outside the
-// profile. Every component strictly between root and dst is lstat'd and a
-// symlink is refused. root is the profile's ccc-owned claude/ destination dir;
-// components above it are ccc-owned and need not be walked.
-func ensureNoSymlinkParent(root string, dst string) error {
-	rel, err := filepath.Rel(root, dst)
+// ensureNoSymlinkPath rejects a destination reached through a symlinked
+// component. O_NOFOLLOW guards only a single final open, so a pre-existing
+// symlink among target's ancestors — a hostile claude/agents -> /outside in a
+// pre-populated store, or a claude/ root that is itself a symlink — would still
+// let the copy (or a MkdirAll) land outside the profile. root must itself be a
+// real directory, and every component from root down to and including target is
+// lstat'd; a symlink is refused. A component that does not exist yet stops the
+// walk: the rest of the path is ours to create as real directories. root is the
+// profile's ccc-owned claude/ destination dir; components above it are ccc-owned
+// and need not be walked.
+func ensureNoSymlinkPath(root string, target string) error {
+	fi, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("refusing to seed: destination root %s is not a real directory", root)
+	}
+	rel, err := filepath.Rel(root, target)
 	if err != nil {
 		return err
 	}
 	dir := root
-	for part := range strings.SplitSeq(filepath.Dir(rel), string(filepath.Separator)) {
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
 		if part == "." || part == "" {
 			continue
 		}
@@ -350,7 +366,7 @@ func ensureNoSymlinkParent(root string, dst string) error {
 		fi, err := os.Lstat(dir)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
-				continue // not created yet; MkdirAll will make a real directory
+				return nil // not created yet; the rest of the path is ours to make
 			}
 			return err
 		}
@@ -389,9 +405,10 @@ func copyFile(src string, dst string, dstRoot string) error {
 	if !fi.Mode().IsRegular() {
 		return nil
 	}
-	// Guard the destination's PARENTS too: O_NOFOLLOW below only protects the
-	// final component, not a symlinked ancestor in a pre-populated store.
-	if err := ensureNoSymlinkParent(dstRoot, dst); err != nil {
+	// Guard the destination root and every ancestor too: O_NOFOLLOW below only
+	// protects the final open, not a symlinked ancestor (or a symlinked root) in
+	// a pre-populated store.
+	if err := ensureNoSymlinkPath(dstRoot, dst); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
