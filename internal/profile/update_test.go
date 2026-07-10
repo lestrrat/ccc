@@ -2,6 +2,7 @@ package profile_test
 
 import (
 	"os"
+	"syscall"
 	"testing"
 
 	"github.com/lestrrat-go/ccc/internal/config"
@@ -116,4 +117,15 @@ func TestIsNewerClaudeVersion(t *testing.T) {
 	require.False(t, config.IsNewerClaudeVersion("garbage", "2.1.205"))
 	require.False(t, config.IsNewerClaudeVersion("2.1", "2.1.205"))
 	require.False(t, config.IsNewerClaudeVersion("2.1.205", "garbage"))
+}
+
+// The update record is Claude Code's file: a FIFO or oversized one must be
+// ignored (no pending upgrade), never brick the run.
+func TestRequestedClaudeVersionIgnoresHostileFile(t *testing.T) {
+	s, _ := newStore(t, "work")
+	require.NoError(t, syscall.Mkfifo(s.UpdateResultPath("work"), 0o600))
+
+	v, err := s.RequestedClaudeVersion("work")
+	require.NoError(t, err, "a FIFO update record must not error")
+	require.Empty(t, v)
 }

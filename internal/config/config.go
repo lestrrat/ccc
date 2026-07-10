@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // DirConfigName is the per-directory config file naming a profile.
@@ -209,23 +210,29 @@ const MaxStateFileSize = 4 << 20 // 4 MiB
 // ReadStateFile reads a ccc state file with the safety a container-writable
 // source demands: it must be a regular file (not a FIFO/device/dir), and the
 // read is bounded by MaxStateFileSize. A missing file returns (nil, nil).
+//
+// The file is opened O_NONBLOCK and fstat'd through the returned descriptor, not
+// pre-Lstat'd by path: a container-writable directory could swap a regular file
+// for a FIFO/symlink between an Lstat and the open (TOCTOU). O_NONBLOCK also
+// means opening a FIFO returns immediately instead of blocking, so the
+// regular-file check can then reject it.
 func ReadStateFile(path string) ([]byte, error) {
-	fi, err := os.Lstat(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
+		return nil, fmt.Errorf("failed to open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
+	if err != nil {
 		return nil, fmt.Errorf("failed to stat %s: %w", path, err)
 	}
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read %s: %w", path, err)
-	}
-	defer func() { _ = f.Close() }()
 
 	b, err := io.ReadAll(io.LimitReader(f, MaxStateFileSize+1))
 	if err != nil {

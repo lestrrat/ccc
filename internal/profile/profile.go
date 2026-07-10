@@ -119,9 +119,12 @@ func (s *Store) UpdateResultPath(name string) string {
 func (s *Store) RequestedClaudeVersion(name string) (string, error) {
 	path := s.UpdateResultPath(name)
 
+	// This file is Claude Code's, not ccc's. A corrupt, oversized, or FIFO
+	// update record must never brick a run — ignore any read/parse trouble and
+	// treat it as "no pending upgrade" (the same tolerance as the parse below).
 	b, err := config.ReadStateFile(path)
 	if err != nil || b == nil {
-		return "", err
+		return "", nil
 	}
 
 	var r updateResult
