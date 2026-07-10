@@ -430,8 +430,11 @@ func (a *app) dirs() []string {
 // variables ccc rewrites itself.
 func (a *app) env() map[string]string {
 	m := ccenv.Filter(os.Environ(), a.cfg.Env.Deny, a.cfg.Env.Allow)
-	// Re-add SSH_AUTH_SOCK only when it names an actual socket ccc mounts, so the
-	// forwarded value always matches a real mount (see mounts()).
+	// SSH_AUTH_SOCK is controlled solely by the validated snapshot: drop whatever
+	// Filter produced (env.allow could re-admit the raw host value) and re-add it
+	// only when it names an actual socket ccc mounts, so the forwarded value
+	// always matches a real read-only socket mount (see mounts()).
+	delete(m, "SSH_AUTH_SOCK")
 	if sock := a.sshAuthSock(); sock != "" {
 		m["SSH_AUTH_SOCK"] = sock
 	}

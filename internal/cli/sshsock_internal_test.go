@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/lestrrat-go/ccc/internal/config"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,4 +33,13 @@ func TestSSHAuthSock(t *testing.T) {
 	defer func() { _ = l.Close() }()
 	t.Setenv("SSH_AUTH_SOCK", sockPath)
 	require.Equal(t, sockPath, resolveSSHAuthSock(), "a real socket is forwarded")
+}
+
+// env.allow must not re-admit a raw, invalid SSH_AUTH_SOCK: the forwarded value
+// is controlled solely by the validated snapshot.
+func TestEnvAllowCannotReadmitInvalidSSHAuthSock(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", t.TempDir()) // a directory, not a socket
+	a := &app{cfg: &config.Config{Env: config.Env{Allow: []string{"SSH_AUTH_SOCK"}}}}
+	_, ok := a.env()["SSH_AUTH_SOCK"]
+	require.False(t, ok, "env.allow must not re-admit an invalid SSH_AUTH_SOCK")
 }
