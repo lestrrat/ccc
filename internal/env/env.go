@@ -20,9 +20,16 @@ var containerManaged = []string{
 // profileBreaking would override the profile's own credentials and silently
 // route every profile to a single account — the exact failure ccc exists to
 // prevent. Re-admit via `env.allow` if you genuinely want key-based auth.
+//
+// CLAUDE_CONFIG_DIR belongs here too: Claude Code honors it, so a forwarded
+// value makes the container read/write state at that path instead of the
+// mounted profile — splitting or sharing state across accounts, defeating the
+// swap. The profile is mounted at $HOME/.claude regardless, so denying the env
+// var is what keeps the boundary intact.
 var profileBreaking = []string{
 	"ANTHROPIC_API_KEY",
 	"ANTHROPIC_AUTH_TOKEN",
+	"CLAUDE_CONFIG_DIR",
 }
 
 // hostPathScoped name host filesystem paths that the container does not mount.
