@@ -28,7 +28,7 @@ func TestSSHAuthSock(t *testing.T) {
 	sockPath := filepath.Join(dir, "agent.sock")
 	l, err := net.Listen("unix", sockPath)
 	require.NoError(t, err)
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	t.Setenv("SSH_AUTH_SOCK", sockPath)
 	require.Equal(t, sockPath, sshAuthSock(), "a real socket is forwarded")
 }
