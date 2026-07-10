@@ -8,6 +8,7 @@ import (
 
 	"github.com/lestrrat-go/ccc/internal/config"
 	"github.com/lestrrat-go/ccc/internal/container"
+	"github.com/lestrrat-go/ccc/internal/profile"
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,4 +126,41 @@ func TestCheckMountDir(t *testing.T) {
 	t.Run("allows a sibling of home", func(t *testing.T) {
 		require.NoError(t, a.checkMountDir("/home/other"))
 	})
+}
+
+// mounts() must bind the SAME canonical path the guard checked, not the original
+// symlink — otherwise a preflight-checked link could still resolve elsewhere.
+func TestPreflightMountsCanonicalCccJsonDir(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	store := profile.NewStore(root, home)
+	require.NoError(t, store.Create("p"))
+
+	repo := t.TempDir()
+	require.NoError(t, exec.Command("git", "-C", repo, "init", "-q").Run())
+	cwd, err := filepath.EvalSymlinks(repo)
+	require.NoError(t, err)
+
+	realDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	link := filepath.Join(cwd, "sibling")
+	require.NoError(t, os.Symlink(realDir, link))
+
+	a := &app{
+		cwd:     cwd,
+		id:      container.Identity{Home: home},
+		cfg:     &config.Config{},
+		store:   store,
+		dirFile: &config.Dir{Dirs: []string{link}},
+	}
+	mounts, err := a.preflight("p")
+	require.NoError(t, err)
+
+	var found bool
+	for _, m := range mounts {
+		require.NotEqual(t, link, m.Source, "must not mount the symlink path")
+		if m.Source == realDir {
+			found = true
+		}
+	}
+	require.True(t, found, "the sibling dir must be mounted at its resolved path")
 }

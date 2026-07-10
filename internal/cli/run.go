@@ -247,10 +247,12 @@ func (a *app) preflight(name string) ([]container.Mount, error) {
 	//
 	// The guard resolves symlinks first: the container could otherwise plant
 	// `repo/link -> /` and list `link`, whose literal path passes the check while
-	// the bind mount follows the symlink to host root. A dir that does not yet
-	// resolve is left for the os.Stat in mounts() to reject.
+	// the bind mount follows the symlink to host root. The resolved path is
+	// written back so mounts() binds THE SAME canonical path that was checked —
+	// mounting the original symlink would reintroduce the bypass. A dir that does
+	// not yet resolve is left for the os.Stat in mounts() to reject.
 	if a.dirFile != nil {
-		for _, d := range a.dirFile.Dirs {
+		for i, d := range a.dirFile.Dirs {
 			target := d
 			if resolved, err := filepath.EvalSymlinks(d); err == nil {
 				target = resolved
@@ -259,6 +261,7 @@ func (a *app) preflight(name string) ([]container.Mount, error) {
 				return nil, fmt.Errorf("%w\n%s lists it in \"dirs\", but that file is inside the container-writable repository and may not mount /, your home, or an ancestor",
 					err, config.DirConfigName)
 			}
+			a.dirFile.Dirs[i] = target
 		}
 	}
 	if err := a.checkWorkdir(); err != nil {
