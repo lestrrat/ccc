@@ -305,6 +305,9 @@ func (s *Store) ValidateMountSources(name string) error {
 	if err := ensureNoSymlinkPath(s.root, s.ClaudeDir(name)); err != nil {
 		return err
 	}
+	if err := requireDirIfExists(s.ClaudeDir(name)); err != nil {
+		return err
+	}
 
 	// The cache/ directory is the profile's THIRD mount source: it is bind-mounted
 	// READ-WRITE at $HOME/.cache when mounts.cache is enabled. Like claude/, a
@@ -313,6 +316,9 @@ func (s *Store) ValidateMountSources(name string) error {
 	// boundary. Guard it with the same walk so check and run agree; a not-yet-
 	// created cache/ stops the walk (nothing to reject).
 	if err := ensureNoSymlinkPath(s.root, s.CacheDir(name)); err != nil {
+		return err
+	}
+	if err := requireDirIfExists(s.CacheDir(name)); err != nil {
 		return err
 	}
 
@@ -444,6 +450,26 @@ func copyTree(src string, dst string) error {
 		}
 		return copyFile(path, target, dst)
 	})
+}
+
+// requireDirIfExists rejects a mount source that exists as something other than
+// a directory. ensureNoSymlinkPath only refuses symlinked components, so a plain
+// regular file at claude/ or cache/ slips through it: os.Stat then reports the
+// source as present, check passes, and only the run fails later at MkdirAll. The
+// two must agree, so validation — not creation — is where this is caught. A path
+// that does not exist yet is fine: the run creates it as a real directory.
+func requireDirIfExists(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat %s: %w", path, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
 }
 
 // ensureNoSymlinkPath rejects a destination reached through a symlinked

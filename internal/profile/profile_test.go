@@ -142,6 +142,27 @@ func TestValidateMountSources(t *testing.T) {
 		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked profile dir like a run does")
 	})
 
+	// A plain regular file at a mount source is not a symlink, so the symlink walk
+	// alone lets it through: os.Stat then reports the source as present and check
+	// passes, while the run fails later at MkdirAll. Validation must reject it so
+	// the two agree.
+	t.Run("rejects a regular file at claude/", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(s.Dir("work"), 0o700))
+		require.NoError(t, os.WriteFile(s.ClaudeDir("work"), []byte("x"), 0o600))
+		require.ErrorContains(t, s.ValidateMountSources("work"), "not a directory")
+	})
+
+	t.Run("rejects a regular file at cache/", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		require.NoError(t, os.WriteFile(s.CacheDir("work"), []byte("x"), 0o600))
+		require.ErrorContains(t, s.ValidateMountSources("work"), "not a directory")
+		// And a real run agrees: it refuses the same path rather than mounting it.
+		_, err := s.MaterializeCache("work")
+		require.Error(t, err, "run must refuse a regular file at cache/ like check does")
+	})
+
 	t.Run("rejects a symlinked claude.json", func(t *testing.T) {
 		s, _ := newStore(t)
 		require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
