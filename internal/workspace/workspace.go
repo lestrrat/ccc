@@ -36,21 +36,35 @@ func Dirs(cwd string) []string {
 
 // gitDirs asks git for the repository root and common git directory.
 func gitDirs(cwd string) (string, string, bool) {
+	// Query each path in its own invocation so the output is exactly one path:
+	// a repository path may contain spaces (macOS "Application Support") or even
+	// a newline, and a combined query would make the two paths ambiguous to
+	// parse, silently disabling worktree awareness.
+	top, ok := gitPath(cwd, "--show-toplevel")
+	if !ok {
+		return "", "", false
+	}
+	common, ok := gitPath(cwd, "--git-common-dir")
+	if !ok {
+		return "", "", false
+	}
+	return top, common, true
+}
+
+// gitPath runs a single-path `git rev-parse` query and returns the one path it
+// prints, with its sole trailing newline trimmed.
+func gitPath(cwd, query string) (string, bool) {
 	cmd := exec.Command("git", "-C", cwd,
-		"rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
+		"rev-parse", "--path-format=absolute", query)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", "", false
+		return "", false
 	}
-
-	// Split on newlines, not whitespace: a repository path may contain spaces
-	// (e.g. macOS "Application Support"). strings.Fields would over-split such a
-	// path and silently disable worktree awareness.
-	lines := strings.Split(strings.Trim(string(out), "\n"), "\n")
-	if len(lines) != 2 || lines[0] == "" || lines[1] == "" {
-		return "", "", false
+	path := strings.TrimSuffix(string(out), "\n")
+	if path == "" {
+		return "", false
 	}
-	return filepath.Clean(lines[0]), filepath.Clean(lines[1]), true
+	return filepath.Clean(path), true
 }
 
 func under(path string, root string) bool {

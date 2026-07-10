@@ -76,6 +76,18 @@ func TestRootsRepoPathWithSpace(t *testing.T) {
 	require.Equal(t, []string{realpath(t, base)}, dirs, "the space must not break resolution")
 }
 
+// A repository path with a newline is legal on Unix. Querying the two paths in
+// one git invocation would make them impossible to tell apart, so each must be
+// asked for separately to keep git awareness working.
+func TestRootsRepoPathWithNewline(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "has\nnewline")
+	require.NoError(t, exec.Command("mkdir", "-p", base).Run())
+	git(t, base, "init", "-q")
+
+	dirs := workspace.Dirs(base)
+	require.Equal(t, []string{realpath(t, base)}, dirs, "the newline must not break resolution")
+}
+
 func realpath(t *testing.T, p string) string {
 	t.Helper()
 	r, err := filepath.EvalSymlinks(p)
