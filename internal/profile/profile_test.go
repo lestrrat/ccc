@@ -95,6 +95,31 @@ func TestSeedSkipsIrregularFiles(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
+// A source entry that is a symlink to a file OUTSIDE the tree must never have
+// its target copied into the profile: copyFile opens with O_NOFOLLOW so a
+// symlink swapped in mid-walk (a TOCTOU race) cannot exfiltrate outside data.
+func TestSeedDoesNotFollowSymlinkOutsideTree(t *testing.T) {
+	s, _ := newStore(t)
+
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("SECRET"), 0o600))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "real.txt"), []byte("x"), 0o600))
+	// A symlink to a live file outside the source tree stands in for the file an
+	// attacker swaps in between the walk and the open.
+	require.NoError(t, os.Symlink(outside, filepath.Join(src, "escape.txt")))
+
+	require.NoError(t, s.Seed("work", src))
+
+	// The regular file copies; the escaping symlink is skipped, target uncopied.
+	_, err := os.Stat(filepath.Join(s.ClaudeDir("work"), "real.txt"))
+	require.NoError(t, err)
+	_, err = os.Lstat(filepath.Join(s.ClaudeDir("work"), "escape.txt"))
+	require.ErrorIs(t, err, os.ErrNotExist, "symlink to outside file must not be copied")
+}
+
 func TestListAndRemove(t *testing.T) {
 	s, _ := newStore(t, "zeta", "alpha")
 

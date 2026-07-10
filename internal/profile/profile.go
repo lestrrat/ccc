@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/lestrrat-go/ccc/internal/config"
 )
@@ -316,8 +317,15 @@ func copyTree(src string, dst string) error {
 }
 
 func copyFile(src string, dst string) error {
-	in, err := os.Open(src)
+	// Open the source with O_NOFOLLOW so a symlink swapped in after copyTree's
+	// walk (a TOCTOU race) is not followed to a file outside the source tree.
+	// A symlink now surfaces as ELOOP here; treat it — and any dangling/racing
+	// link — as a runtime artifact to skip, matching copyTree's non-regular skip.
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("failed to open %s: %w", src, err)
 	}
 	defer func() { _ = in.Close() }()
@@ -326,11 +334,19 @@ func copyFile(src string, dst string) error {
 	if err != nil {
 		return fmt.Errorf("failed to stat %s: %w", src, err)
 	}
+	// Re-check regularity AFTER opening the fd: the walk saw a regular file, but
+	// only fstat on the opened descriptor proves this fd is still one (not a
+	// FIFO/device swapped in during the race). Skip anything that is not.
+	if !fi.Mode().IsRegular() {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+	// O_NOFOLLOW on the destination too: an existing symlink at dst (e.g. seeding
+	// into a pre-populated store) must not be followed and truncated.
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, fi.Mode().Perm())
 	if err != nil {
 		return fmt.Errorf("failed to create %s: %w", dst, err)
 	}
