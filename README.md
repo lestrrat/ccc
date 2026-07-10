@@ -153,7 +153,7 @@ There is no `build` command: the image builds itself on first run, and whenever 
 | `profiles/<name>/claude.json` | `$HOME/.claude.json` | rw |
 | `~/.ssh` | `$HOME/.ssh` | ro |
 | `~/.gitconfig` | `$HOME/.gitconfig` | ro |
-| `$SSH_AUTH_SOCK` | same path | rw |
+| `$SSH_AUTH_SOCK` | same path | ro |
 | gh config dir | `$HOME/.config/gh` | ro |
 
 `$HOME` itself is **not** mounted. So the host's `~/.local`, `~/go`, and `~/.cache` do not exist inside the container, and neither does the host's Claude Code installation.
@@ -254,7 +254,7 @@ Always dropped:
 | `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `PWD`, `OLDPWD`, `TMPDIR`, `TMP`, `TEMP`, `HOSTNAME` | container-managed; the host values are wrong inside |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` | would override the profile's own credentials and silently route every profile to a single account |
 
-`SSH_AUTH_SOCK` is forwarded with its socket bind-mounted at the same path.
+`SSH_AUTH_SOCK` is forwarded **only when it points at an actual socket**, with that socket bind-mounted read-only at the same path. A value that is a directory or file (a hostile `SSH_AUTH_SOCK=$HOME` or `=~/.ssh/id_rsa`) is refused rather than mounted.
 
 Extend with `env.deny`; re-admit a dropped variable with `env.allow` (which wins over every deny rule).
 

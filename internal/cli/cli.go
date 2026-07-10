@@ -58,6 +58,10 @@ type app struct {
 	// mount (a run, `check`) care, so `ccc version` must not fail because a
 	// broken file sits in an ancestor directory.
 	dirFileErr error
+	// sshSock memoizes the validated SSH_AUTH_SOCK once per invocation, so the
+	// mount, the forwarded env, and `check` all describe the same snapshot even
+	// if the socket appears/disappears mid-run.
+	sshSock *string
 }
 
 // invocation is a parsed command line.

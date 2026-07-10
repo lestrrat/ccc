@@ -356,7 +356,7 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 	// SSH_AUTH_SOCK points at lets a hostile env/direnv mount an arbitrary path
 	// read-write (SSH_AUTH_SOCK=$HOME mounts the whole home; =~/.ssh/id_rsa
 	// overlays the ro .ssh mount with a writable key).
-	if sock := sshAuthSock(); sock != "" {
+	if sock := a.sshAuthSock(); sock != "" {
 		out = append(out, container.Mount{Source: sock, Target: sock, ReadOnly: true})
 	}
 	return out, nil
@@ -432,7 +432,7 @@ func (a *app) env() map[string]string {
 	m := ccenv.Filter(os.Environ(), a.cfg.Env.Deny, a.cfg.Env.Allow)
 	// Re-add SSH_AUTH_SOCK only when it names an actual socket ccc mounts, so the
 	// forwarded value always matches a real mount (see mounts()).
-	if sock := sshAuthSock(); sock != "" {
+	if sock := a.sshAuthSock(); sock != "" {
 		m["SSH_AUTH_SOCK"] = sock
 	}
 
@@ -467,11 +467,22 @@ func underRoot(path string, root string) bool {
 	return rel == "." || !strings.HasPrefix(rel, "..")
 }
 
-// sshAuthSock returns SSH_AUTH_SOCK only when it points at an actual socket,
-// else "". Lstat (not Stat) so a symlinked value is not silently followed, and
-// the ModeSocket check is what stops a hostile SSH_AUTH_SOCK from turning into
-// an arbitrary rw bind mount.
-func sshAuthSock() string {
+// sshAuthSock returns the validated SSH_AUTH_SOCK, snapshotted once per
+// invocation so the mount, the forwarded env value, and `ccc check` never
+// disagree if the socket appears or disappears mid-run.
+func (a *app) sshAuthSock() string {
+	if a.sshSock == nil {
+		v := resolveSSHAuthSock()
+		a.sshSock = &v
+	}
+	return *a.sshSock
+}
+
+// resolveSSHAuthSock returns SSH_AUTH_SOCK only when it points at an actual
+// socket, else "". Lstat (not Stat) so a symlinked value is not silently
+// followed, and the ModeSocket check is what stops a hostile SSH_AUTH_SOCK from
+// turning into an arbitrary rw bind mount.
+func resolveSSHAuthSock() string {
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
 		return ""
