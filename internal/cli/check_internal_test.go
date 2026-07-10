@@ -44,7 +44,14 @@ func TestPreflightRefusesUntrustedCccJsonDirs(t *testing.T) {
 	require.NoError(t, err)
 	home := t.TempDir() // a home that does not contain the repo
 
-	for _, bad := range []string{"/", home, filepath.Dir(home)} {
+	// A symlink inside the container-writable repo pointing at / or $HOME must be
+	// refused by its resolved target, not merely its literal path.
+	rootLink := filepath.Join(cwd, "rootlink")
+	require.NoError(t, os.Symlink("/", rootLink))
+	homeLink := filepath.Join(cwd, "homelink")
+	require.NoError(t, os.Symlink(home, homeLink))
+
+	for _, bad := range []string{"/", home, filepath.Dir(home), rootLink, homeLink} {
 		a := &app{
 			cwd:     cwd,
 			id:      container.Identity{Home: home},

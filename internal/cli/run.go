@@ -244,9 +244,18 @@ func (a *app) preflight(name string) ([]container.Mount, error) {
 	// contained process could write {"dirs":["/"]} or {"dirs":["~"]} to escalate
 	// the next run's mounts to host root/home read-write. Apply the same refusal
 	// here. (config.json's mounts.dirs is host-only and stays trusted.)
+	//
+	// The guard resolves symlinks first: the container could otherwise plant
+	// `repo/link -> /` and list `link`, whose literal path passes the check while
+	// the bind mount follows the symlink to host root. A dir that does not yet
+	// resolve is left for the os.Stat in mounts() to reject.
 	if a.dirFile != nil {
 		for _, d := range a.dirFile.Dirs {
-			if err := a.checkMountDir(d); err != nil {
+			target := d
+			if resolved, err := filepath.EvalSymlinks(d); err == nil {
+				target = resolved
+			}
+			if err := a.checkMountDir(target); err != nil {
 				return nil, fmt.Errorf("%w\n%s lists it in \"dirs\", but that file is inside the container-writable repository and may not mount /, your home, or an ancestor",
 					err, config.DirConfigName)
 			}
