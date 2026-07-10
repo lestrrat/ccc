@@ -355,6 +355,7 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 	// and the directory is writable. A read-only $HOME does stop it — which is
 	// why "ro" needs no special-casing, and "rw" cannot be made safe.
 	if a.cfg.Mounts.Home == config.HomeRW {
+		fmt.Fprint(os.Stderr, homeRWWarning())
 		for _, rel := range []string{".local/bin", ".local/share/claude"} {
 			src := filepath.Join(a.id.Home, rel)
 			if _, err := os.Stat(src); err != nil {
@@ -386,6 +387,25 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 		out = append(out, container.Mount{Source: sock, Target: sock, ReadOnly: true})
 	}
 	return out, nil
+}
+
+// homeRWWarning is printed on every mounts.home "rw" run: the mode cannot fully
+// protect the host home. The read-only guard above only shadows ~/.local/bin and
+// ~/.local/share/claude when they ALREADY exist; if they do not, `claude
+// install` inside the container creates them in the real home. Even when they
+// exist a rename(2) over the directory entry defeats the file-level guard (see
+// the block above), so "rw" is never a full guarantee — hence a warning rather
+// than silent, partial protection.
+func homeRWWarning() string {
+	return strings.Join([]string{
+		"ccc: WARNING: mounts.home is \"rw\"; host ~/.local is NOT fully protected.",
+		"ccc: the read-only installer guard only shadows ~/.local/bin and",
+		"ccc: ~/.local/share/claude when they already exist, so `claude install`",
+		"ccc: inside the container may still create or rewrite them in your host home.",
+		"ccc: to avoid this, do not use mounts.home \"rw\" (use \"ro\" or omit it), or",
+		"ccc: pre-create those paths so the guard can mount them read-only.",
+		"",
+	}, "\n")
 }
 
 // ghConfig resolves the gh CLI config dir: the profile's override, else the

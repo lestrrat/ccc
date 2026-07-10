@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lestrrat-go/ccc/internal/config"
@@ -163,4 +164,17 @@ func TestPreflightMountsCanonicalCccJsonDir(t *testing.T) {
 		}
 	}
 	require.True(t, found, "the sibling dir must be mounted at its resolved path")
+}
+
+// mounts.home "rw" cannot fully protect the host ~/.local, so the user must be
+// told: the read-only guard only covers the ~/.local paths that already exist.
+func TestWarnHomeRW(t *testing.T) {
+	got := homeRWWarning()
+
+	require.Contains(t, got, "mounts.home is \"rw\"")
+	require.Contains(t, got, "~/.local")
+	require.Contains(t, got, "already exist", "must explain the guard only covers existing paths")
+	for line := range strings.SplitSeq(strings.TrimRight(got, "\n"), "\n") {
+		require.True(t, strings.HasPrefix(line, "ccc: "), "every warning line uses the ccc: prefix, got %q", line)
+	}
 }

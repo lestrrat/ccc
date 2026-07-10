@@ -342,6 +342,8 @@ By default this is uninteresting, because `$HOME` is not mounted and the host's 
 
 Under `"home": "ro"` this is impossible: `rename(2)` needs a writable parent directory. Under `"home": "rw"` ccc read-only-mounts `~/.local/bin` and `~/.local/share/claude`, which holds even against `claude install --force` — `EROFS` is not a check the installer can override — at the cost of nothing inside the container being able to install into `~/.local/bin`.
 
+But that guard only covers paths that **already exist**: ccc read-only-mounts `~/.local/bin` and `~/.local/share/claude` only when they are present on the host. If they are not, there is nothing to mount, and `claude install` inside the container creates them in your real home. `"rw"` therefore cannot fully protect `~/.local`, and ccc prints a warning to that effect on every `"rw"` run. Prefer `"ro"`, or — if you must use `"rw"` — pre-create those paths so the guard can bind them read-only.
+
 ### Upgrading Claude Code
 
 It upgrades itself. You do not normally run anything.
