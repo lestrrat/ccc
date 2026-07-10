@@ -220,39 +220,21 @@ func (s *Store) Materialize(name string) error {
 	if err := os.MkdirAll(s.root, 0o700); err != nil {
 		return fmt.Errorf("failed to create profile store: %w", err)
 	}
-	claudeDir := s.ClaudeDir(name)
-	// The claude/ directory is bind-mounted READ-WRITE at $HOME/.claude, so it —
-	// and the profiles/<name> ancestor between the store root and it — must be a
-	// real directory, never a symlink. os.MkdirAll on a pre-existing symlink-to-dir
-	// succeeds, so a claude/ (or profiles/<name>) -> /outside link would otherwise
-	// be silently accepted here and mount the outside target into the container,
-	// defeating the profile boundary. Reuse the seed copy path's guard to refuse a
-	// symlinked component BEFORE the MkdirAll; a not-yet-created path is ours to make.
-	if err := ensureNoSymlinkPath(s.root, claudeDir); err != nil {
+	// Refuse a symlinked mount source BEFORE creating anything: the same guard
+	// `ccc check` runs, so check and run agree on whether the profile is safe.
+	if err := s.ValidateMountSources(name); err != nil {
 		return err
 	}
+	claudeDir := s.ClaudeDir(name)
 	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		return fmt.Errorf("failed to create profile dir: %w", err)
 	}
 
 	path := s.ClaudeJSON(name)
-	// Lstat, not Stat: an existing claude.json must be a real regular file, not a
-	// symlink os.Stat would follow. A pre-existing claude.json -> /outside link
-	// would otherwise pass the exists check here and survive to be bind-mounted at
-	// $HOME/.claude.json in the container. Reject any non-regular existing entry.
-	if fi, err := os.Lstat(path); err == nil {
-		if !fi.Mode().IsRegular() {
-			return fmt.Errorf("%s must be a regular file, not %s", path, fi.Mode().Type())
-		}
-		// A hard link is a regular file, so the check above accepts it — but its
-		// inode is shared with whatever else links to it, and bind-mounting the
-		// file read-write at $HOME/.claude.json would let the container mutate
-		// that outside path through the shared inode, bypassing copyFile's
-		// temp+rename hard-link defense. Require a private single-link inode, the
-		// same "must be a private regular file" invariant copyFile enforces.
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
-			return fmt.Errorf("%s must be a private regular file, not a hard link (link count %d)", path, st.Nlink)
-		}
+	// ValidateMountSources already lstat'd claude.json and accepted it (or errored
+	// out above). It exists and is a private regular file, or it does not exist yet
+	// and is ours to seed. Re-lstat only to distinguish those two cases.
+	if _, err := os.Lstat(path); err == nil {
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("failed to stat %s: %w", path, err)
@@ -260,6 +242,68 @@ func (s *Store) Materialize(name string) error {
 
 	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 		return fmt.Errorf("failed to seed %s: %w", path, err)
+	}
+	return nil
+}
+
+// ValidateMountSources rejects a profile whose bind-mount sources would escape
+// the profile boundary, WITHOUT creating anything — so `ccc check` can apply the
+// exact invariant a real run enforces (Materialize calls this before any mkdir)
+// while staying a read-only diagnostic.
+//
+// A profile that has not been materialized yet is a no-op success: there is
+// nothing on disk to validate, and `ccc check` on a fresh profile must not fail
+// merely because the mount sources do not exist yet — the run that follows will
+// create them through Materialize, which re-runs this guard.
+func (s *Store) ValidateMountSources(name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	// The store root is the trusted root for the symlink walk. If it does not
+	// exist yet, no profile has been materialized: nothing to validate.
+	if fi, err := os.Lstat(s.root); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat %s: %w", s.root, err)
+	} else if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("profile store %s is not a real directory", s.root)
+	}
+
+	// The claude/ directory is bind-mounted READ-WRITE at $HOME/.claude, so it —
+	// and the profiles/<name> ancestor between the store root and it — must be a
+	// real directory, never a symlink. os.MkdirAll on a pre-existing symlink-to-dir
+	// succeeds, so a claude/ (or profiles/<name>) -> /outside link would otherwise
+	// be silently accepted and mount the outside target into the container,
+	// defeating the profile boundary. Reuse the seed copy path's guard to refuse a
+	// symlinked component; a not-yet-created path stops the walk (nothing to reject).
+	if err := ensureNoSymlinkPath(s.root, s.ClaudeDir(name)); err != nil {
+		return err
+	}
+
+	path := s.ClaudeJSON(name)
+	// Lstat, not Stat: an existing claude.json must be a real regular file, not a
+	// symlink os.Stat would follow. A pre-existing claude.json -> /outside link
+	// would otherwise pass the exists check and survive to be bind-mounted at
+	// $HOME/.claude.json in the container. Reject any non-regular existing entry.
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // not created yet; Materialize will seed it as a real file
+		}
+		return fmt.Errorf("failed to stat %s: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s must be a regular file, not %s", path, fi.Mode().Type())
+	}
+	// A hard link is a regular file, so the check above accepts it — but its inode
+	// is shared with whatever else links to it, and bind-mounting the file
+	// read-write at $HOME/.claude.json would let the container mutate that outside
+	// path through the shared inode, bypassing copyFile's temp+rename hard-link
+	// defense. Require a private single-link inode, the same "must be a private
+	// regular file" invariant copyFile enforces.
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+		return fmt.Errorf("%s must be a private regular file, not a hard link (link count %d)", path, st.Nlink)
 	}
 	return nil
 }

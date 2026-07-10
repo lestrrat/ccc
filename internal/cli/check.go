@@ -55,6 +55,16 @@ func cmdCheck(a *app, args []string) error {
 		step("claude pin", nil, orLatest(pinned))
 	}
 
+	// The mount-source invariant a real run enforces: a run calls Materialize
+	// (which refuses a symlinked claude/ dir or a symlinked/hard-linked
+	// claude.json) before preflight, so check must apply the same guard or it
+	// reports green on a profile the run would reject. Non-mutating, so the
+	// diagnostic never creates a profile as a side effect.
+	if err := a.store.ValidateMountSources(res.Name); err != nil {
+		step("mount sources", err, "")
+		return errFailed(failed)
+	}
+
 	// The real preflight: working directory inside a mounted dir, and every
 	// mount source present on the host.
 	mounts, err := a.preflight(res.Name)

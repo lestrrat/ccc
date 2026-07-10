@@ -107,6 +107,60 @@ func TestMaterializeRejectsSymlinkedProfileDir(t *testing.T) {
 	require.Empty(t, entries, "must not write through the symlinked profile dir")
 }
 
+// ValidateMountSources is what `ccc check` calls before preflight, so it must
+// reject exactly what Materialize (the real run path) rejects — a symlinked
+// claude/ dir, a symlinked profiles/<name> ancestor, and a symlinked or
+// hard-linked claude.json — WITHOUT creating anything. Otherwise `ccc check`
+// reports a profile green that a real run would refuse.
+func TestValidateMountSources(t *testing.T) {
+	t.Run("no-op success before the profile is materialized", func(t *testing.T) {
+		s, _ := newStore(t)
+		// Nothing on disk yet: check must not fail merely because the mount
+		// sources do not exist — the run that follows creates them.
+		require.NoError(t, s.ValidateMountSources("work"))
+		// And it must not have created the profile as a side effect.
+		require.False(t, s.Exists("work"), "validation must not materialize the profile")
+	})
+
+	t.Run("a materialized profile passes", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		require.NoError(t, s.ValidateMountSources("work"))
+	})
+
+	t.Run("rejects a symlinked claude/ dir", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(s.Dir("work"), 0o700))
+		require.NoError(t, os.Symlink(t.TempDir(), s.ClaudeDir("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked claude/ dir like a run does")
+	})
+
+	t.Run("rejects a symlinked profiles/<name> dir", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(filepath.Dir(s.Dir("work")), 0o700))
+		require.NoError(t, os.Symlink(t.TempDir(), s.Dir("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked profile dir like a run does")
+	})
+
+	t.Run("rejects a symlinked claude.json", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
+		outside := filepath.Join(t.TempDir(), "outside.json")
+		require.NoError(t, os.WriteFile(outside, []byte(`{"secret":1}`), 0o600))
+		require.NoError(t, os.Symlink(outside, s.ClaudeJSON("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked claude.json like a run does")
+	})
+
+	t.Run("rejects a hard-linked claude.json", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
+		outside := filepath.Join(t.TempDir(), "outside.json")
+		require.NoError(t, os.WriteFile(outside, []byte(`{"secret":1}`), 0o600))
+		require.NoError(t, os.Link(outside, s.ClaudeJSON("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a hard-linked claude.json like a run does")
+	})
+}
+
 // A pre-existing claude.json that is a HARD LINK to an outside file is a regular
 // file, so Materialize's IsRegular check accepts it — but bind-mounting that
 // shared inode read-write at $HOME/.claude.json would let the container mutate
