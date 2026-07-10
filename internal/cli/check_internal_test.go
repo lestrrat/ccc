@@ -42,7 +42,11 @@ func TestPreflightRefusesUntrustedCccJsonDirs(t *testing.T) {
 	require.NoError(t, exec.Command("git", "-C", repo, "init", "-q").Run())
 	cwd, err := filepath.EvalSymlinks(repo)
 	require.NoError(t, err)
-	home := t.TempDir() // a home that does not contain the repo
+	// Canonicalize home too: the guard resolves symlinks, and on macOS a temp
+	// dir under /var resolves to /private/var, which would otherwise not match
+	// an unresolved id.Home. Real id.Home (from user.Current) is already canonical.
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 
 	// A symlink inside the container-writable repo pointing at / or $HOME must be
 	// refused by its resolved target, not merely its literal path.
