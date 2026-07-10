@@ -372,6 +372,19 @@ func TestExpand(t *testing.T) {
 	require.Equal(t, "rel/path", must(config.Expand("rel/path", "/h")))
 }
 
+func TestExpandDir(t *testing.T) {
+	// Valid: "~", "~/...", and absolute paths expand to absolute results.
+	require.Equal(t, "/h", must(config.ExpandDir("~", "/h")))
+	require.Equal(t, "/h/x/y", must(config.ExpandDir("~/x/y", "/h")))
+	require.Equal(t, "/abs", must(config.ExpandDir("/abs", "/h")))
+
+	// Invalid: non-"~/" tilde forms and bare relative paths are rejected.
+	for _, path := range []string{"~work", "~work/sub", "rel/path", "", "~~"} {
+		_, err := config.ExpandDir(path, "/h")
+		require.Error(t, err, "path %q must be rejected", path)
+	}
+}
+
 func must(s string, err error) string {
 	if err != nil {
 		panic(err)

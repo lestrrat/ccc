@@ -539,10 +539,20 @@ func ExpandDir(path string, home string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("empty mount directory")
 	}
-	if !filepath.IsAbs(path) && !strings.HasPrefix(path, "~") {
+	// Mirror Expand's tilde rules exactly: only "~", "~/...", or an absolute
+	// path are valid. Forms like "~work" would otherwise slip past validation
+	// and stay relative, since Expand leaves them untouched.
+	if path != "~" && !strings.HasPrefix(path, "~/") && !filepath.IsAbs(path) {
 		return "", fmt.Errorf("mount directory %q must be absolute or start with ~/", path)
 	}
-	return Expand(path, home)
+	expanded, err := Expand(path, home)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(expanded) {
+		return "", fmt.Errorf("mount directory %q did not expand to an absolute path", path)
+	}
+	return expanded, nil
 }
 
 // expandDirs validates and expands a list of mount directories.
