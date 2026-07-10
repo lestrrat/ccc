@@ -2,10 +2,9 @@ FROM node:22-bookworm
 
 ARG UID=1000
 ARG GID=1000
-ARG USERNAME=user
 # HOME is the HOST's home path, mirrored into the container so that identical
 # absolute paths mean the same thing on both sides of the mount. It is NOT
-# always /home/${USERNAME}: macOS is /Users/x, ostree is /var/home/x, LDAP homes
+# always /home/<user>: macOS is /Users/x, ostree is /var/home/x, LDAP homes
 # vary. ccc places every mount at the host home, so the container user's home
 # must match it exactly.
 ARG HOME=/home/user
@@ -45,11 +44,16 @@ RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local \
 # resolves, which docker's --user needs. The base image ships node:1000, which
 # collides whenever the host user is also 1000.
 #
-# Every ${HOME}/${USERNAME} interpolation is quoted: a home or short-name with a
-# space (rare, but the values are the host's, unvalidated) would otherwise
-# field-split and break useradd. `mkdir -p $(dirname $HOME)` because useradd -m
-# does not create missing parents, and a host home may be nested (/var/home/x,
-# /Users/x) with no parent in the image.
+# The account uses a FIXED name (ccc), never the host's login name. Real host
+# usernames break this: LDAP/corp/mac names (alice@example.com, DOMAIN\alice),
+# a leading dash (parsed as a useradd flag), or a purely numeric name all make
+# useradd/groupadd fail or misbehave. Identity is carried entirely by the
+# numeric ${UID}/${GID}, so the container never depends on that host string.
+#
+# ${HOME} is still quoted: a host home with a space (rare, but the value is the
+# host's, unvalidated) would otherwise field-split and break useradd. `mkdir -p
+# $(dirname $HOME)` because useradd -m does not create missing parents, and a
+# host home may be nested (/var/home/x, /Users/x) with no parent in the image.
 #
 # No sudo is installed or granted: with rootful docker (no user-namespace
 # remapping and no --security-opt no-new-privileges), passwordless sudo would
@@ -58,9 +62,9 @@ RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local \
 # adds it via Dockerfile.extra.
 RUN if getent passwd ${UID} >/dev/null; then userdel -r "$(getent passwd ${UID} | cut -d: -f1)" || true; fi \
  && if getent group ${GID} >/dev/null; then groupdel "$(getent group ${GID} | cut -d: -f1)" || true; fi \
- && groupadd -g ${GID} "${USERNAME}" \
+ && groupadd -g ${GID} ccc \
  && mkdir -p "$(dirname "${HOME}")" \
- && useradd -u ${UID} -g ${GID} -s /bin/bash -d "${HOME}" -m "${USERNAME}"
+ && useradd -u ${UID} -g ${GID} -s /bin/bash -d "${HOME}" -m ccc
 
 # Claude Code, LAST. Installed globally under /usr/local so it survives the host
 # $HOME being mounted over the container's home directory at runtime.
@@ -75,7 +79,10 @@ RUN if getent passwd ${UID} >/dev/null; then userdel -r "$(getent passwd ${UID} 
 ARG CLAUDE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} && npm cache clean --force
 
-USER ${USERNAME}
+# Numeric so the final identity is exactly the passwd entry created above and
+# can never resolve to the wrong account; it matches docker's --user uid:gid and
+# podman's keep-id, both of which run the container as the host UID/GID.
+USER ${UID}:${GID}
 ENV HOME=${HOME}
 
 # NOTE: ccc appends the content-hash verification footer (ARG CCC_CONTENT_HASH +

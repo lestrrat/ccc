@@ -158,7 +158,7 @@ There is no `build` command: the image builds itself on first run, and whenever 
 
 `$HOME` itself is **not** mounted. So the host's `~/.local`, `~/go`, and `~/.cache` do not exist inside the container, and neither does the host's Claude Code installation.
 
-The container user mirrors your UID, GID, username, and home directory, and every directory is mounted at its **identical absolute path**. Absolute paths therefore mean the same thing on both sides of the mount, and files written into your repositories are owned by you.
+The container user mirrors your UID, GID, and home directory, and every directory is mounted at its **identical absolute path**. Absolute paths therefore mean the same thing on both sides of the mount, and files written into your repositories are owned by you. The account itself has a fixed name (`ccc`) rather than your host login name — identity is carried entirely by the numeric UID/GID, so unusual host usernames cannot break the image.
 
 Networking is `--network=host`: dev servers on localhost stay reachable, and Claude Code's OAuth loopback callback lands on your browser during login.
 
