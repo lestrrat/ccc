@@ -64,6 +64,49 @@ func TestMaterializeRejectsSymlinkedClaudeJSON(t *testing.T) {
 	require.JSONEq(t, `{"secret":1}`, string(b), "symlink target must not be written through")
 }
 
+// A normal `ccc run` never calls Seed: it calls Materialize and bind-mounts the
+// profile's claude/ dir READ-WRITE at $HOME/.claude. os.MkdirAll on a pre-existing
+// claude/ -> /outside symlink succeeds, so without a guard Materialize would
+// return nil and ccc would mount the outside target into the container, defeating
+// the profile boundary. Materialize must reject a symlinked claude/ dir and write
+// nothing into its target.
+func TestMaterializeRejectsSymlinkedClaudeDir(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, os.MkdirAll(s.Dir("work"), 0o700))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, s.ClaudeDir("work")))
+
+	require.Error(t, s.Materialize("work"), "a symlinked claude/ dir must be rejected")
+
+	// A run-style resolve funnels through Materialize too, so it must fail as well.
+	require.Error(t, s.Seed("work", t.TempDir()), "seeding onto a symlinked claude/ dir must fail")
+
+	// Nothing may be created inside the symlink's outside target.
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	require.Empty(t, entries, "must not write through the symlinked claude/ dir")
+}
+
+// The profiles/<name> ancestor between the store root and claude/ being a symlink
+// must be rejected too: os.MkdirAll would walk straight through it. ensureNoSymlinkPath
+// lstat's every component from the store root down, so Materialize refuses it.
+func TestMaterializeRejectsSymlinkedProfileDir(t *testing.T) {
+	s, _ := newStore(t)
+
+	outside := t.TempDir()
+	// profiles/<name> itself is the symlink; the store root above it stays real.
+	require.NoError(t, os.MkdirAll(filepath.Dir(s.Dir("work")), 0o700))
+	require.NoError(t, os.Symlink(outside, s.Dir("work")))
+
+	require.Error(t, s.Materialize("work"), "a symlinked profiles/<name> dir must be rejected")
+
+	// Nothing may be created inside the symlink's outside target.
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	require.Empty(t, entries, "must not write through the symlinked profile dir")
+}
+
 // A pre-existing claude.json that is a HARD LINK to an outside file is a regular
 // file, so Materialize's IsRegular check accepts it — but bind-mounting that
 // shared inode read-write at $HOME/.claude.json would let the container mutate

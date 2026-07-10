@@ -215,7 +215,23 @@ func (s *Store) Materialize(name string) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.ClaudeDir(name), 0o700); err != nil {
+	// The store root is ccc-owned; make it the trusted root for the symlink guard
+	// below, which needs it to exist as a real directory before it can walk down.
+	if err := os.MkdirAll(s.root, 0o700); err != nil {
+		return fmt.Errorf("failed to create profile store: %w", err)
+	}
+	claudeDir := s.ClaudeDir(name)
+	// The claude/ directory is bind-mounted READ-WRITE at $HOME/.claude, so it —
+	// and the profiles/<name> ancestor between the store root and it — must be a
+	// real directory, never a symlink. os.MkdirAll on a pre-existing symlink-to-dir
+	// succeeds, so a claude/ (or profiles/<name>) -> /outside link would otherwise
+	// be silently accepted here and mount the outside target into the container,
+	// defeating the profile boundary. Reuse the seed copy path's guard to refuse a
+	// symlinked component BEFORE the MkdirAll; a not-yet-created path is ours to make.
+	if err := ensureNoSymlinkPath(s.root, claudeDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		return fmt.Errorf("failed to create profile dir: %w", err)
 	}
 
