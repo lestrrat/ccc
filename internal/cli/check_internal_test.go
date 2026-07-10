@@ -129,6 +129,85 @@ func TestCheckMountDir(t *testing.T) {
 	})
 }
 
+// mounts() is shared by the real run and by cmdCheck (via preflight), so it must
+// be side-effect free: a fresh profile with mounts.cache enabled must yield no
+// cache mount and, above all, must not create profiles/<name>/cache. The run
+// path materializes the cache dir before preflight; check runs before any
+// materialization, so the dir is legitimately absent and simply not mounted yet.
+func TestMountsDoesNotCreateCacheDir(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	store := profile.NewStore(root, home)
+	require.NoError(t, store.Create("p"))
+
+	a := &app{
+		id:    container.Identity{Home: home},
+		cfg:   &config.Config{Mounts: config.Mounts{Cache: true}},
+		store: store,
+	}
+	mounts, err := a.mounts("p")
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(store.CacheDir("p"))
+	require.True(t, os.IsNotExist(statErr), "a check-style mounts() call must not create the cache dir")
+
+	cacheTarget := filepath.Join(home, ".cache")
+	for _, m := range mounts {
+		require.NotEqual(t, cacheTarget, m.Target, "no cache mount until the run materializes it")
+	}
+}
+
+// Once the run path has materialized the cache dir, mounts() emits it: a real
+// run mounts the profile-owned cache at $HOME/.cache.
+func TestMountsEmitsMaterializedCacheDir(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	store := profile.NewStore(root, home)
+	require.NoError(t, store.Create("p"))
+	_, err := store.MaterializeCache("p")
+	require.NoError(t, err)
+
+	a := &app{
+		id:    container.Identity{Home: home},
+		cfg:   &config.Config{Mounts: config.Mounts{Cache: true}},
+		store: store,
+	}
+	mounts, err := a.mounts("p")
+	require.NoError(t, err)
+
+	cacheTarget := filepath.Join(home, ".cache")
+	var found bool
+	for _, m := range mounts {
+		if m.Target == cacheTarget {
+			found = true
+			require.Equal(t, store.CacheDir("p"), m.Source)
+		}
+	}
+	require.True(t, found, "a materialized cache dir must be mounted")
+}
+
+// A pre-existing cache/ -> /outside symlink must fail BOTH cli paths and create
+// nothing outside. The refusal moved out of mounts() into the shared store
+// guards the two paths call: cmdCheck guards with ValidateMountSources, and the
+// run path (exec) guards with MaterializeCache — os.MkdirAll on a symlink-to-dir
+// would otherwise mount the outside target read-write, escaping the profile.
+func TestSymlinkedCacheDirRefusedOnBothPaths(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	store := profile.NewStore(root, home)
+	require.NoError(t, store.Create("p"))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, store.CacheDir("p")))
+
+	// Check path: cmdCheck calls ValidateCacheSource when mounts.cache is set.
+	require.Error(t, store.ValidateCacheSource("p"), "check must refuse a symlinked cache dir")
+	// Run path: exec calls MaterializeCache before preflight.
+	_, err := store.MaterializeCache("p")
+	require.Error(t, err, "run must refuse a symlinked cache dir")
+
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	require.Empty(t, entries, "must not create anything through the symlinked cache dir")
+}
+
 // mounts() must bind the SAME canonical path the guard checked, not the original
 // symlink — otherwise a preflight-checked link could still resolve elsewhere.
 func TestPreflightMountsCanonicalCccJsonDir(t *testing.T) {

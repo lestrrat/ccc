@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/lestrrat-go/ccc/internal/config"
 )
@@ -214,12 +215,37 @@ func (s *Store) Materialize(name string) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.ClaudeDir(name), 0o700); err != nil {
+	// The store root is ccc-owned; make it the trusted root for the symlink guard
+	// below, which needs it to exist as a real directory before it can walk down.
+	if err := os.MkdirAll(s.root, 0o700); err != nil {
+		return fmt.Errorf("failed to create profile store: %w", err)
+	}
+	// Refuse a symlinked mount source BEFORE creating anything: the same guard
+	// `ccc check` runs, so check and run agree on whether the profile is safe.
+	if err := s.ValidateMountSources(name); err != nil {
+		return err
+	}
+	claudeDir := s.ClaudeDir(name)
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		return fmt.Errorf("failed to create profile dir: %w", err)
 	}
 
 	path := s.ClaudeJSON(name)
-	if _, err := os.Stat(path); err == nil {
+	// ValidateMountSources already lstat'd claude.json and accepted it (or errored
+	// out above): it exists as a single-link regular file, or it does not exist yet
+	// and is ours to seed. Re-lstat only to distinguish those two cases.
+	if fi, err := os.Lstat(path); err == nil {
+		// Validation proves it is not a symlink or hard link, but says nothing about
+		// its mode. claude.json holds credentials, and Seed writes it 0600 — an
+		// existing 0644 one (copied in by hand, or predating that rule) must not stay
+		// group/world-readable. Tighten it here rather than rejecting it: this is
+		// ccc's own file, so widening is a bug to repair, not a reason to refuse the
+		// run. check stays non-mutating and green, because nothing is actually wrong.
+		if fi.Mode().Perm()&0o077 != 0 {
+			if err := os.Chmod(path, 0o600); err != nil {
+				return fmt.Errorf("failed to tighten %s to 0600: %w", path, err)
+			}
+		}
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("failed to stat %s: %w", path, err)
@@ -227,6 +253,145 @@ func (s *Store) Materialize(name string) error {
 
 	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 		return fmt.Errorf("failed to seed %s: %w", path, err)
+	}
+	return nil
+}
+
+// MaterializeCache ensures the profile's cache/ mount source exists as a real
+// directory under the store and returns its path. It mirrors Materialize's
+// guard-then-create for claude/: cache/ is bind-mounted read-write at
+// $HOME/.cache, so it is a mount source subject to the same profile-boundary
+// invariant. Validating BEFORE os.MkdirAll refuses a pre-existing cache/ ->
+// /outside symlink rather than following it and mounting the outside target.
+func (s *Store) MaterializeCache(name string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	// The store root is the trusted root for the symlink guard below; it must
+	// exist as a real directory before the guard can walk down from it.
+	if err := os.MkdirAll(s.root, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create profile store: %w", err)
+	}
+	if err := s.ValidateCacheSource(name); err != nil {
+		return "", err
+	}
+	dir := s.CacheDir(name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create profile cache: %w", err)
+	}
+	return dir, nil
+}
+
+// ValidateCacheSource is ValidateMountSources for the cache/ directory, kept
+// separate because cache/ is a mount source only when mounts.cache is enabled.
+// Folding it into ValidateMountSources would fail a cache-disabled run over a
+// stray cache/ entry that run would never mount or create. Callers validate it
+// exactly where they mount it: MaterializeCache, and cmdCheck when the same
+// mounts.cache flag is set. Non-mutating, like ValidateMountSources.
+func (s *Store) ValidateCacheSource(name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	if err := s.validateStoreRoot(); err != nil || !s.rootExists() {
+		return err
+	}
+	// cache/ is bind-mounted READ-WRITE at $HOME/.cache. Like claude/, a pre-existing
+	// cache/ -> /outside symlink would be followed by os.MkdirAll and mount the
+	// outside target into the container; a plain file there would let check pass and
+	// only the run fail. A not-yet-created cache/ stops the walk (nothing to reject).
+	if err := ensureNoSymlinkPath(s.root, s.CacheDir(name)); err != nil {
+		return err
+	}
+	return requireDirIfExists(s.CacheDir(name))
+}
+
+// rootExists reports whether the store root is present. An absent root means no
+// profile has been materialized: there is nothing on disk to validate.
+func (s *Store) rootExists() bool {
+	_, err := os.Lstat(s.root)
+	return err == nil
+}
+
+// validateStoreRoot requires the store root, when present, to be a real directory:
+// it is the trusted root every symlink walk descends from.
+func (s *Store) validateStoreRoot() error {
+	fi, err := os.Lstat(s.root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat %s: %w", s.root, err)
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("profile store %s is not a real directory", s.root)
+	}
+	return nil
+}
+
+// ValidateMountSources rejects a profile whose bind-mount sources would escape
+// the profile boundary, WITHOUT creating anything — so `ccc check` can apply the
+// exact invariant a real run enforces (Materialize calls this before any mkdir)
+// while staying a read-only diagnostic.
+//
+// A profile that has not been materialized yet is a no-op success: there is
+// nothing on disk to validate, and `ccc check` on a fresh profile must not fail
+// merely because the mount sources do not exist yet — the run that follows will
+// create them through Materialize, which re-runs this guard.
+func (s *Store) ValidateMountSources(name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	// The store root is the trusted root for the symlink walk. If it does not
+	// exist yet, no profile has been materialized: nothing to validate.
+	if err := s.validateStoreRoot(); err != nil {
+		return err
+	}
+	if !s.rootExists() {
+		return nil
+	}
+
+	// The claude/ directory is bind-mounted READ-WRITE at $HOME/.claude, so it —
+	// and the profiles/<name> ancestor between the store root and it — must be a
+	// real directory, never a symlink. os.MkdirAll on a pre-existing symlink-to-dir
+	// succeeds, so a claude/ (or profiles/<name>) -> /outside link would otherwise
+	// be silently accepted and mount the outside target into the container,
+	// defeating the profile boundary. Reuse the seed copy path's guard to refuse a
+	// symlinked component; a not-yet-created path stops the walk (nothing to reject).
+	if err := ensureNoSymlinkPath(s.root, s.ClaudeDir(name)); err != nil {
+		return err
+	}
+	if err := requireDirIfExists(s.ClaudeDir(name)); err != nil {
+		return err
+	}
+
+	// cache/ is deliberately NOT validated here: it is a mount source only when
+	// mounts.cache is enabled, so ValidateCacheSource is called by the paths that
+	// actually mount it. Validating it unconditionally would fail a cache-disabled
+	// run over a stray cache/ entry that run would never mount or create.
+
+	path := s.ClaudeJSON(name)
+	// Lstat, not Stat: an existing claude.json must be a real regular file, not a
+	// symlink os.Stat would follow. A pre-existing claude.json -> /outside link
+	// would otherwise pass the exists check and survive to be bind-mounted at
+	// $HOME/.claude.json in the container. Reject any non-regular existing entry.
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // not created yet; Materialize will seed it as a real file
+		}
+		return fmt.Errorf("failed to stat %s: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s must be a regular file, not %s", path, fi.Mode().Type())
+	}
+	// A hard link is a regular file, so the check above accepts it — but its inode
+	// is shared with whatever else links to it, and bind-mounting the file
+	// read-write at $HOME/.claude.json would let the container mutate that outside
+	// path through the shared inode, bypassing copyFile's temp+rename hard-link
+	// defense. Require a private single-link inode, the same "must be a private
+	// regular file" invariant copyFile enforces.
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+		return fmt.Errorf("%s must be a private regular file, not a hard link (link count %d)", path, st.Nlink)
 	}
 	return nil
 }
@@ -281,7 +446,23 @@ func (s *Store) Seed(name string, from string) error {
 		}
 		return fmt.Errorf("failed to stat %s: %w", sidecar, err)
 	}
-	return copyFile(sidecar, s.ClaudeJSON(name))
+	// The sidecar is a single known file; unlike the tree, following a symlink
+	// here is INTENDED (dotfile managers symlink ~/.claude.json), the same
+	// rationale as the tree root's EvalSymlinks above. Resolve it to its
+	// regular-file target so copyFile's no-follow open sees a real file rather
+	// than skipping the link on ELOOP and leaving the materialized empty {}.
+	resolved := sidecar
+	if r, err := filepath.EvalSymlinks(sidecar); err == nil {
+		resolved = r
+	}
+	// The sidecar's destination parent is the profile dir itself (ccc-owned),
+	// so pass it as the no-symlink root: there is nothing between it and the
+	// file to walk.
+	// 0600, not the source's mode: claude.json carries credentials and MCP state,
+	// and Materialize created it 0600. A world-readable ~/.claude.json on the host
+	// must not widen the profile's copy.
+	dst := s.ClaudeJSON(name)
+	return copyFile(resolved, dst, filepath.Dir(dst), 0o600)
 }
 
 // ValidateName rejects names that would escape the profiles directory.
@@ -304,6 +485,12 @@ func copyTree(src string, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
+			// Route directory creation through the same symlink guard as files:
+			// a pre-existing claude/agents -> /outside symlink must not let
+			// MkdirAll create /outside/nested, and dst itself must be a real dir.
+			if err := ensureNoSymlinkPath(dst, target); err != nil {
+				return err
+			}
 			return os.MkdirAll(target, 0o700)
 		}
 		// Skip sockets, devices, and dangling symlinks; they are runtime
@@ -311,13 +498,92 @@ func copyTree(src string, dst string) error {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		return copyFile(path, target)
+		// perm 0: the tree mirrors each source file's own mode.
+		return copyFile(path, target, dst, 0)
 	})
 }
 
-func copyFile(src string, dst string) error {
-	in, err := os.Open(src)
+// requireDirIfExists rejects a mount source that exists as something other than
+// a directory. ensureNoSymlinkPath only refuses symlinked components, so a plain
+// regular file at claude/ or cache/ slips through it: os.Stat then reports the
+// source as present, check passes, and only the run fails later at MkdirAll. The
+// two must agree, so validation — not creation — is where this is caught. A path
+// that does not exist yet is fine: the run creates it as a real directory.
+func requireDirIfExists(path string) error {
+	fi, err := os.Lstat(path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to stat %s: %w", path, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
+}
+
+// ensureNoSymlinkPath rejects a destination reached through a symlinked
+// component. O_NOFOLLOW guards only a single final open, so a pre-existing
+// symlink among target's ancestors — a hostile claude/agents -> /outside in a
+// pre-populated store, or a claude/ root that is itself a symlink — would still
+// let the copy (or a MkdirAll) land outside the profile. root must itself be a
+// real directory, and every component from root down to and including target is
+// lstat'd; a symlink is refused. A component that does not exist yet stops the
+// walk: the rest of the path is ours to create as real directories. root is the
+// profile's ccc-owned claude/ destination dir; components above it are ccc-owned
+// and need not be walked.
+func ensureNoSymlinkPath(root string, target string) error {
+	fi, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("refusing to seed: destination root %s is not a real directory", root)
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return err
+	}
+	dir := root
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		dir = filepath.Join(dir, part)
+		fi, err := os.Lstat(dir)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil // not created yet; the rest of the path is ours to make
+			}
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to seed through symlinked parent %s", dir)
+		}
+	}
+	return nil
+}
+
+// copyFile copies src to dst atomically. perm, when non-zero, is the mode the
+// destination gets regardless of the source's; perm 0 mirrors the source mode.
+// The override exists because the profile's claude.json holds credentials: a
+// world-readable 0644 ~/.claude.json on the host must not widen the 0600 file
+// Materialize created, so seeding it forces 0600 rather than inheriting.
+func copyFile(src string, dst string, dstRoot string, perm fs.FileMode) error {
+	// Open the source with O_NOFOLLOW so a symlink swapped in after copyTree's
+	// walk (a TOCTOU race) is not followed to a file outside the source tree.
+	// A symlink now surfaces as ELOOP here; treat it — and any dangling/racing
+	// link — as a runtime artifact to skip, matching copyTree's non-regular skip.
+	// O_NONBLOCK mirrors config.ReadStateFile: opening a FIFO swapped in during
+	// the race returns immediately instead of blocking (hanging the host ccc
+	// process) before the fstat regular-file check below can reject it. Regular
+	// files ignore O_NONBLOCK, so the copy is unaffected.
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("failed to open %s: %w", src, err)
 	}
 	defer func() { _ = in.Close() }()
@@ -326,18 +592,91 @@ func copyFile(src string, dst string) error {
 	if err != nil {
 		return fmt.Errorf("failed to stat %s: %w", src, err)
 	}
+	// Re-check regularity AFTER opening the fd: the walk saw a regular file, but
+	// only fstat on the opened descriptor proves this fd is still one (not a
+	// FIFO/device swapped in during the race). Skip anything that is not.
+	if !fi.Mode().IsRegular() {
+		return nil
+	}
+	// Guard the destination root and every ancestor too: O_NOFOLLOW below only
+	// protects the final open, not a symlinked ancestor (or a symlinked root) in
+	// a pre-populated store.
+	if err := ensureNoSymlinkPath(dstRoot, dst); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
-	if err != nil {
-		return fmt.Errorf("failed to create %s: %w", dst, err)
+	// Write to a fresh temp file in the guard-verified parent, then atomically
+	// rename it over dst. O_NOFOLLOW alone stops a destination SYMLINK from being
+	// followed, but a pre-existing HARD LINK at dst is a regular file: opening it
+	// O_TRUNC would write THROUGH it and mutate the shared inode, which may be a
+	// pathname OUTSIDE the profile. Creating a brand-new inode and renaming it
+	// over dst swaps the directory entry instead of writing through whatever dst
+	// currently points at, closing symlink and hard-link write-through together.
+	mode := fi.Mode().Perm()
+	if perm != 0 {
+		mode = perm.Perm()
 	}
-	defer func() { _ = out.Close() }()
+	out, err := createTempFile(dst, mode)
+	if err != nil {
+		return err
+	}
+	// On any failure past this point the temp file is orphaned; remove it. On
+	// success the rename consumes it, so nothing is left to clean up.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = out.Close()
+			_ = os.Remove(out.Name())
+		}
+	}()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return fmt.Errorf("failed to copy %s: %w", src, err)
 	}
-	return out.Close()
+	// Persist the bytes before the rename so a crash cannot leave dst pointing at
+	// a fresh but empty inode.
+	if err := out.Sync(); err != nil {
+		return fmt.Errorf("failed to sync %s: %w", out.Name(), err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("failed to close %s: %w", out.Name(), err)
+	}
+	if err := os.Rename(out.Name(), dst); err != nil {
+		return fmt.Errorf("failed to replace %s: %w", dst, err)
+	}
+	committed = true
+	return nil
+}
+
+// createTempFile makes a fresh, exclusively-created temp file in dst's already
+// guard-verified parent directory (never /tmp, so the later os.Rename is an
+// atomic same-filesystem swap). Its basename is a short fixed prefix plus the
+// pid and a counter — NOT dst's filename with a suffix, which for a near-
+// NAME_MAX source name would overflow and fail the create with ENAMETOOLONG,
+// breaking legitimately long filenames. O_CREATE|O_EXCL|O_NOFOLLOW guarantees a
+// brand-new inode: it fails rather than opening any pre-existing symlink, hard
+// link, or file at the candidate name, so nothing outside the profile is
+// touched. The final chmod pins the exact source permission bits, which the
+// umask on create may otherwise have masked off.
+func createTempFile(dst string, perm fs.FileMode) (*os.File, error) {
+	dir := filepath.Dir(dst)
+	for n := 0; ; n++ {
+		name := filepath.Join(dir, fmt.Sprintf(".ccc-tmp-%d-%d", os.Getpid(), n))
+		out, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, perm)
+		if err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue // name taken (or a link squats it); try the next candidate
+			}
+			return nil, fmt.Errorf("failed to create temp file for %s: %w", dst, err)
+		}
+		if err := out.Chmod(perm); err != nil {
+			_ = out.Close()
+			_ = os.Remove(name)
+			return nil, fmt.Errorf("failed to chmod %s: %w", name, err)
+		}
+		return out, nil
+	}
 }

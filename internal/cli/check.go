@@ -54,6 +54,26 @@ func cmdCheck(a *app, args []string) error {
 	}
 	step("profile", nil, res.String())
 
+	// The mount-source invariant a real run enforces: a run calls Materialize
+	// (which refuses a symlinked claude/ dir or a symlinked/hard-linked
+	// claude.json) before it touches anything under the profile, so check must
+	// apply the same guard first — otherwise reading the pin below would follow a
+	// symlinked claude/ out of the profile before the failure is ever reported.
+	// Non-mutating, so the diagnostic never creates a profile as a side effect.
+	if err := a.store.ValidateMountSources(res.Name); err != nil {
+		step("mount sources", err, "")
+		return errFailed(failed)
+	}
+	// cache/ is a mount source only when mounts.cache is set, so validate it under
+	// the same flag the run mounts it under — never for a cache-disabled profile,
+	// which would fail over a stray cache/ entry the run would never touch.
+	if a.cfg.Mounts.Cache {
+		if err := a.store.ValidateCacheSource(res.Name); err != nil {
+			step("mount sources", err, "")
+			return errFailed(failed)
+		}
+	}
+
 	pinned, err := a.claudeVersion(res.Name)
 	if err != nil {
 		step("claude pin", err, "")
@@ -75,6 +95,15 @@ func cmdCheck(a *app, args []string) error {
 			mode = "ro"
 		}
 		fmt.Printf("      %-14s %s -> %s (%s)\n", "", m.Source, m.Target, mode)
+	}
+	// mounts() never creates the cache dir (check must not), so a fresh profile
+	// legitimately has no cache/ yet and no cache mount above. Report it as pending
+	// rather than silently omit it: the first real run materializes it and mounts
+	// it. Stay truthful without failing a valid fresh profile.
+	if a.cfg.Mounts.Cache {
+		if _, statErr := os.Stat(a.store.CacheDir(res.Name)); statErr != nil {
+			fmt.Printf("      %-14s %s\n", "cache", a.store.CacheDir(res.Name)+" (will be created on first run)")
+		}
 	}
 
 	b, err := a.builder(rt, res.Name)

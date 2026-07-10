@@ -190,6 +190,15 @@ func (a *app) exec(res profile.Resolution, cmd []string) error {
 	if err := a.store.Materialize(res.Name); err != nil {
 		return err
 	}
+	// Guard-then-create the cache dir here, on the real run path only, so the
+	// shared mounts()/preflight path (which cmdCheck also drives) stays side-effect
+	// free. This must precede preflight: mounts() emits the cache mount only once
+	// its source exists, so the dir has to be materialized before mounts assemble.
+	if a.cfg.Mounts.Cache {
+		if _, err := a.store.MaterializeCache(res.Name); err != nil {
+			return err
+		}
+	}
 	mounts, err := a.preflight(res.Name)
 	if err != nil {
 		return err
@@ -314,11 +323,19 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 	}
 
 	if a.cfg.Mounts.Cache {
+		// mounts() is side-effect free: cmdCheck reaches this code through
+		// preflight, and a diagnostic must create nothing. So use the pure path,
+		// never MaterializeCache — the run path (exec) materializes the cache dir
+		// BEFORE preflight, so on a real run the source exists and is mounted here;
+		// check runs before any materialization, so on a fresh profile the dir is
+		// legitimately absent and simply not mounted yet (the run creates it). A
+		// symlinked cache/ is already refused upstream by ValidateMountSources —
+		// Materialize runs it on the run path, cmdCheck runs it explicitly — so this
+		// plain existence check cannot follow a link out of the profile.
 		src := a.store.CacheDir(name)
-		if err := os.MkdirAll(src, 0o700); err != nil {
-			return nil, fmt.Errorf("failed to create profile cache: %w", err)
+		if _, err := os.Stat(src); err == nil {
+			out = append(out, container.Mount{Source: src, Target: filepath.Join(a.id.Home, ".cache")})
 		}
-		out = append(out, container.Mount{Source: src, Target: filepath.Join(a.id.Home, ".cache")})
 	}
 
 	// The profile owns both halves of Claude Code's state. These sort after

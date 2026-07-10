@@ -1,8 +1,10 @@
 package profile_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lestrrat-go/ccc/internal/profile"
@@ -34,6 +36,297 @@ func TestMaterializeIsIdempotent(t *testing.T) {
 	b, err := os.ReadFile(s.ClaudeJSON("work"))
 	require.NoError(t, err)
 	require.JSONEq(t, `{"keep":1}`, string(b), "must not clobber existing state")
+}
+
+// Seed writes claude.json 0600, so an existing one must not stay wider. A 0644
+// file copied in by hand (or predating that rule) holds the same credentials, so
+// Materialize tightens it in place rather than leaving it group/world-readable.
+func TestMaterializeTightensWideClaudeJSON(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+	require.NoError(t, os.Chmod(s.ClaudeJSON("work"), 0o644))
+
+	require.NoError(t, s.Materialize("work"))
+
+	fi, err := os.Stat(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o600), fi.Mode().Perm(),
+		"an existing group/world-readable claude.json must be tightened to 0600")
+
+	// Tightening must not clobber the contents.
+	require.NoError(t, os.WriteFile(s.ClaudeJSON("work"), []byte(`{"keep":1}`), 0o644))
+	require.NoError(t, s.Materialize("work"))
+	b, err := os.ReadFile(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"keep":1}`, string(b))
+}
+
+// A pre-existing claude.json that is a symlink to an outside file must be
+// rejected, not accepted: os.Stat would follow the link and report it exists,
+// leaving the attacker link in place to be bind-mounted at $HOME/.claude.json.
+// Materialize lstat's it and requires a regular file, so Seed's no-sidecar path
+// (which returns before any O_NOFOLLOW copy) fails instead of leaving the link.
+func TestMaterializeRejectsSymlinkedClaudeJSON(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
+
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{"secret":1}`), 0o600))
+	require.NoError(t, os.Symlink(outside, s.ClaudeJSON("work")))
+
+	require.Error(t, s.Materialize("work"), "a symlinked claude.json must be rejected")
+
+	// Seed's no-sidecar path funnels through Materialize, so it must fail too and
+	// leave the attacker link in place rather than reporting success.
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.Error(t, s.Seed("work", src), "seeding onto a symlinked claude.json must fail")
+
+	// The outside target must be untouched: neither followed-and-truncated nor read.
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"secret":1}`, string(b), "symlink target must not be written through")
+}
+
+// A normal `ccc run` never calls Seed: it calls Materialize and bind-mounts the
+// profile's claude/ dir READ-WRITE at $HOME/.claude. os.MkdirAll on a pre-existing
+// claude/ -> /outside symlink succeeds, so without a guard Materialize would
+// return nil and ccc would mount the outside target into the container, defeating
+// the profile boundary. Materialize must reject a symlinked claude/ dir and write
+// nothing into its target.
+func TestMaterializeRejectsSymlinkedClaudeDir(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, os.MkdirAll(s.Dir("work"), 0o700))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, s.ClaudeDir("work")))
+
+	require.Error(t, s.Materialize("work"), "a symlinked claude/ dir must be rejected")
+
+	// A run-style resolve funnels through Materialize too, so it must fail as well.
+	require.Error(t, s.Seed("work", t.TempDir()), "seeding onto a symlinked claude/ dir must fail")
+
+	// Nothing may be created inside the symlink's outside target.
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	require.Empty(t, entries, "must not write through the symlinked claude/ dir")
+}
+
+// The profiles/<name> ancestor between the store root and claude/ being a symlink
+// must be rejected too: os.MkdirAll would walk straight through it. ensureNoSymlinkPath
+// lstat's every component from the store root down, so Materialize refuses it.
+func TestMaterializeRejectsSymlinkedProfileDir(t *testing.T) {
+	s, _ := newStore(t)
+
+	outside := t.TempDir()
+	// profiles/<name> itself is the symlink; the store root above it stays real.
+	require.NoError(t, os.MkdirAll(filepath.Dir(s.Dir("work")), 0o700))
+	require.NoError(t, os.Symlink(outside, s.Dir("work")))
+
+	require.Error(t, s.Materialize("work"), "a symlinked profiles/<name> dir must be rejected")
+
+	// Nothing may be created inside the symlink's outside target.
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	require.Empty(t, entries, "must not write through the symlinked profile dir")
+}
+
+// ValidateMountSources is what `ccc check` calls before preflight, so it must
+// reject exactly what Materialize (the real run path) rejects — a symlinked
+// claude/ dir, a symlinked profiles/<name> ancestor, and a symlinked or
+// hard-linked claude.json — WITHOUT creating anything. Otherwise `ccc check`
+// reports a profile green that a real run would refuse.
+func TestValidateMountSources(t *testing.T) {
+	t.Run("no-op success before the profile is materialized", func(t *testing.T) {
+		s, _ := newStore(t)
+		// Nothing on disk yet: check must not fail merely because the mount
+		// sources do not exist — the run that follows creates them.
+		require.NoError(t, s.ValidateMountSources("work"))
+		// And it must not have created the profile as a side effect.
+		require.False(t, s.Exists("work"), "validation must not materialize the profile")
+	})
+
+	t.Run("a materialized profile passes", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		require.NoError(t, s.ValidateMountSources("work"))
+	})
+
+	t.Run("rejects a symlinked claude/ dir", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(s.Dir("work"), 0o700))
+		require.NoError(t, os.Symlink(t.TempDir(), s.ClaudeDir("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked claude/ dir like a run does")
+	})
+
+	t.Run("rejects a symlinked profiles/<name> dir", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(filepath.Dir(s.Dir("work")), 0o700))
+		require.NoError(t, os.Symlink(t.TempDir(), s.Dir("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked profile dir like a run does")
+	})
+
+	// A plain regular file at a mount source is not a symlink, so the symlink walk
+	// alone lets it through: os.Stat then reports the source as present and check
+	// passes, while the run fails later at MkdirAll. Validation must reject it so
+	// the two agree.
+	t.Run("rejects a regular file at claude/", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(s.Dir("work"), 0o700))
+		require.NoError(t, os.WriteFile(s.ClaudeDir("work"), []byte("x"), 0o600))
+		require.ErrorContains(t, s.ValidateMountSources("work"), "not a directory")
+	})
+
+	// cache/ is a mount source only when mounts.cache is on, so ValidateMountSources
+	// must ignore it: a cache-disabled run never mounts or creates cache/, and must
+	// not fail over a stray entry there.
+	// cache/ is a mount source only when mounts.cache is on, so ValidateMountSources
+	// must ignore it: a cache-disabled run never mounts or creates cache/, and must
+	// not fail over a stray entry there.
+	t.Run("ignores cache/ entirely", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		require.NoError(t, os.Symlink(t.TempDir(), s.CacheDir("work")))
+		require.NoError(t, s.ValidateMountSources("work"),
+			"a cache-disabled run must not fail over a cache/ it never mounts")
+	})
+
+	t.Run("rejects a symlinked claude.json", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
+		outside := filepath.Join(t.TempDir(), "outside.json")
+		require.NoError(t, os.WriteFile(outside, []byte(`{"secret":1}`), 0o600))
+		require.NoError(t, os.Symlink(outside, s.ClaudeJSON("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked claude.json like a run does")
+	})
+
+	t.Run("rejects a hard-linked claude.json", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
+		outside := filepath.Join(t.TempDir(), "outside.json")
+		require.NoError(t, os.WriteFile(outside, []byte(`{"secret":1}`), 0o600))
+		require.NoError(t, os.Link(outside, s.ClaudeJSON("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a hard-linked claude.json like a run does")
+	})
+}
+
+// ValidateCacheSource is what the cache-enabled paths call: MaterializeCache on a
+// run, and cmdCheck under the same mounts.cache flag. It must reject exactly what
+// would escape the profile if bind-mounted read-write at $HOME/.cache.
+func TestValidateCacheSource(t *testing.T) {
+	t.Run("no-op success before the cache exists", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		require.NoError(t, s.ValidateCacheSource("work"))
+	})
+
+	t.Run("rejects a symlinked cache/", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		outside := t.TempDir()
+		require.NoError(t, os.Symlink(outside, s.CacheDir("work")))
+		require.Error(t, s.ValidateCacheSource("work"), "a symlinked cache/ must be rejected")
+		_, err := s.MaterializeCache("work")
+		require.Error(t, err, "the run path must refuse it too")
+		entries, err := os.ReadDir(outside)
+		require.NoError(t, err)
+		require.Empty(t, entries, "must not write through the symlinked cache/")
+	})
+
+	t.Run("rejects a regular file at cache/", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		require.NoError(t, os.WriteFile(s.CacheDir("work"), []byte("x"), 0o600))
+		require.ErrorContains(t, s.ValidateCacheSource("work"), "not a directory")
+		// And a real run agrees: it refuses the same path rather than mounting it.
+		_, err := s.MaterializeCache("work")
+		require.Error(t, err, "run must refuse a regular file at cache/ like check does")
+	})
+}
+
+// MaterializeCache is the run path's cache mount source creator. Like
+// Materialize for claude/, it must refuse a pre-existing cache/ -> /outside
+// symlink rather than follow it: os.MkdirAll on a symlink-to-dir succeeds, so
+// without the guard the outside target would be bind-mounted read-write into
+// the container. Nothing may be created inside the symlink's target.
+func TestMaterializeCacheRejectsSymlinkedCache(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, s.CacheDir("work")))
+
+	_, err := s.MaterializeCache("work")
+	require.Error(t, err, "a symlinked cache dir must be rejected, not followed")
+
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	require.Empty(t, entries, "must not create anything through the symlinked cache dir")
+}
+
+// The happy path: MaterializeCache creates a real cache/ directory under the
+// profile and returns its path, so a clean profile mounts a profile-owned cache.
+func TestMaterializeCacheCreatesRealDir(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	dir, err := s.MaterializeCache("work")
+	require.NoError(t, err)
+	require.Equal(t, s.CacheDir("work"), dir)
+
+	fi, err := os.Lstat(dir)
+	require.NoError(t, err)
+	require.True(t, fi.IsDir())
+	require.Zero(t, fi.Mode()&os.ModeSymlink, "cache dir must be a real directory, not a symlink")
+}
+
+// A pre-existing claude.json that is a HARD LINK to an outside file is a regular
+// file, so Materialize's IsRegular check accepts it — but bind-mounting that
+// shared inode read-write at $HOME/.claude.json would let the container mutate
+// the outside file through it. Materialize must reject a link count > 1, and
+// Seed (which funnels through Materialize) must fail rather than accept it.
+func TestMaterializeRejectsHardlinkedClaudeJSON(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
+
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{"secret":1}`), 0o600))
+	// A hard link, not a symlink: the profile's claude.json shares the inode.
+	require.NoError(t, os.Link(outside, s.ClaudeJSON("work")))
+
+	require.Error(t, s.Materialize("work"), "a hard-linked claude.json must be rejected")
+
+	// Seed's no-sidecar path funnels through Materialize, so it must fail too.
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.Error(t, s.Seed("work", src), "seeding onto a hard-linked claude.json must fail")
+
+	// The outside inode must be untouched: neither truncated nor written through.
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"secret":1}`, string(b), "hard-link target must not be written through")
+}
+
+// Seeding a source file whose basename is near NAME_MAX must succeed. The temp
+// file used for the copy has a SHORT fixed-prefix basename in dst's parent, not
+// dst's long name plus a suffix — which would overflow NAME_MAX and fail the
+// create with ENAMETOOLONG, breaking legitimately long filenames.
+func TestSeedCopiesNearNameMaxFile(t *testing.T) {
+	s, _ := newStore(t)
+
+	// 250 bytes: a valid basename (<= NAME_MAX 255) that overflows once any
+	// non-trivial suffix is appended, as the old temp-naming scheme did.
+	long := strings.Repeat("a", 250)
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, long), []byte("payload"), 0o600))
+
+	require.NoError(t, s.Seed("work", src), "a near-NAME_MAX filename must seed, not overflow the temp name")
+
+	b, err := os.ReadFile(filepath.Join(s.ClaudeDir("work"), long))
+	require.NoError(t, err)
+	require.Equal(t, "payload", string(b))
 }
 
 func TestCreateRejectsDuplicate(t *testing.T) {
@@ -93,6 +386,190 @@ func TestSeedSkipsIrregularFiles(t *testing.T) {
 	require.NoError(t, err)
 	_, err = os.Lstat(filepath.Join(s.ClaudeDir("work"), "dangling"))
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// A source entry that is a symlink to a file OUTSIDE the tree must never have
+// its target copied into the profile. This is the first line of defense:
+// copyTree's WalkDir sees the symlink as non-regular and skips it before
+// copyFile is ever called. copyFile's own O_NOFOLLOW source open (the TOCTOU
+// race defense) is exercised by the destination-symlink tests below, which
+// actually reach it.
+func TestSeedDoesNotFollowSymlinkOutsideTree(t *testing.T) {
+	s, _ := newStore(t)
+
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("SECRET"), 0o600))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "real.txt"), []byte("x"), 0o600))
+	// A symlink to a live file outside the source tree stands in for the file an
+	// attacker swaps in between the walk and the open.
+	require.NoError(t, os.Symlink(outside, filepath.Join(src, "escape.txt")))
+
+	require.NoError(t, s.Seed("work", src))
+
+	// The regular file copies; the escaping symlink is skipped, target uncopied.
+	_, err := os.Stat(filepath.Join(s.ClaudeDir("work"), "real.txt"))
+	require.NoError(t, err)
+	_, err = os.Lstat(filepath.Join(s.ClaudeDir("work"), "escape.txt"))
+	require.ErrorIs(t, err, os.ErrNotExist, "symlink to outside file must not be copied")
+}
+
+// A symlinked ~/.claude.json sidecar (dotfile managers commonly symlink it)
+// must be followed and its target copied, not silently dropped: following the
+// symlink is INTENDED for this single known file, unlike the tree copy. Before
+// the fix, copyFile skipped it on ELOOP, leaving the materialized empty {}.
+func TestSeedCopiesSymlinkedSidecar(t *testing.T) {
+	s, _ := newStore(t)
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "CLAUDE.md"), []byte("# hi"), 0o600))
+
+	// The real registry lives elsewhere; the sidecar beside ~/.claude is a link.
+	target := filepath.Join(t.TempDir(), "real.claude.json")
+	require.NoError(t, os.WriteFile(target, []byte(`{"projects":{"p":1}}`), 0o600))
+	require.NoError(t, os.Symlink(target, src+".json"))
+
+	require.NoError(t, s.Seed("work", src))
+
+	b, err := os.ReadFile(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"projects":{"p":1}}`, string(b), "symlinked sidecar must be followed and copied, not dropped")
+}
+
+// claude.json holds credentials and MCP state. Materialize creates it 0600, and
+// seeding must not widen that to whatever mode the host's ~/.claude.json happens
+// to carry — a world-readable host file would otherwise leak the profile's copy.
+func TestSeedKeepsSidecarPrivate(t *testing.T) {
+	s, _ := newStore(t)
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(src+".json", []byte(`{"projects":{}}`), 0o644))
+
+	require.NoError(t, s.Seed("work", src))
+
+	fi, err := os.Stat(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o600), fi.Mode().Perm(),
+		"a 0644 host sidecar must not widen the profile's claude.json")
+}
+
+// A pre-populated store whose claude/agents is a symlink to an outside dir must
+// not let seeding write agents/a.md through it. O_NOFOLLOW guards only the
+// final path component, so copyFile lstat's every parent under the profile's
+// claude/ root and refuses a symlinked one. This drives copyFile directly: the
+// dest exists as a symlink at open time, exercising the parent-symlink guard.
+func TestSeedRejectsSymlinkedDestParent(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, filepath.Join(s.ClaudeDir("work"), "agents")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "agents"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "agents", "a.md"), []byte("agent"), 0o600))
+
+	require.Error(t, s.Seed("work", src), "seeding through a symlinked parent must fail")
+	_, err := os.Stat(filepath.Join(outside, "a.md"))
+	require.ErrorIs(t, err, os.ErrNotExist, "must not write through the symlinked parent")
+}
+
+// A pre-existing symlink AT a destination file must not be followed and its
+// target truncated: copyFile opens the destination O_NOFOLLOW. This reaches
+// copyFile's destination no-follow branch (the symlink exists at open time).
+func TestSeedDoesNotFollowSymlinkedDestFile(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte("KEEP"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(s.ClaudeDir("work"), "CLAUDE.md")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "CLAUDE.md"), []byte("# new"), 0o600))
+
+	require.Error(t, s.Seed("work", src), "seeding onto a symlinked dest file must fail")
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.Equal(t, "KEEP", string(b), "symlink target must not be truncated or overwritten")
+}
+
+// A pre-existing HARD LINK at a destination file must not be written through to
+// its shared inode: O_NOFOLLOW stops a symlink but a hard link is a regular
+// file, so an O_TRUNC open would mutate the linked-to outside file. copyFile
+// writes a fresh inode to a temp file and renames it over dst, swapping the
+// directory entry instead of writing through the existing hard link.
+func TestSeedDoesNotWriteThroughHardlinkedDestFile(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte("KEEP"), 0o600))
+	// A hard link, not a symlink: dst is a regular file sharing the outside inode.
+	require.NoError(t, os.Link(outside, filepath.Join(s.ClaudeDir("work"), "CLAUDE.md")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "CLAUDE.md"), []byte("# new"), 0o600))
+
+	require.NoError(t, s.Seed("work", src), "seeding over a hard-linked dest must succeed via temp+rename")
+
+	// The outside inode must be untouched: the rename replaced the dir entry.
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.Equal(t, "KEEP", string(b), "hard-link target must not be written through")
+
+	// dst now points at a fresh inode holding the source content.
+	b, err = os.ReadFile(filepath.Join(s.ClaudeDir("work"), "CLAUDE.md"))
+	require.NoError(t, err)
+	require.Equal(t, "# new", string(b), "dst must hold the freshly copied source bytes")
+}
+
+// The profile's claude/ destination root being itself a symlink to an outside
+// directory must be rejected before anything is copied: without checking the
+// root, Seed would write the whole tree straight through it. ensureNoSymlinkPath
+// lstat's the root first.
+func TestSeedRejectsSymlinkedDestRoot(t *testing.T) {
+	s, _ := newStore(t)
+
+	// Pre-create the profile dir and point its claude/ root at an outside dir.
+	require.NoError(t, os.MkdirAll(s.Dir("work"), 0o700))
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, s.ClaudeDir("work")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "CLAUDE.md"), []byte("# hi"), 0o600))
+
+	require.Error(t, s.Seed("work", src), "seeding through a symlinked dest root must fail")
+	_, err := os.Stat(filepath.Join(outside, "CLAUDE.md"))
+	require.ErrorIs(t, err, os.ErrNotExist, "must not write through the symlinked root")
+}
+
+// A pre-existing claude/agents -> /outside symlink must not let DIRECTORY
+// creation for a source agents/nested/ tree run MkdirAll straight through it,
+// creating /outside/nested. Directory creation goes through the same symlink
+// guard as file copies. Unlike TestSeedRejectsSymlinkedDestParent (which reaches
+// copyFile via a file directly under agents/), this drives copyTree's dir branch.
+func TestSeedRejectsSymlinkedDestDirCreation(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, filepath.Join(s.ClaudeDir("work"), "agents")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "agents", "nested"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "agents", "nested", "a.md"), []byte("agent"), 0o600))
+
+	require.Error(t, s.Seed("work", src), "creating a dir through a symlinked parent must fail")
+	_, err := os.Stat(filepath.Join(outside, "nested"))
+	require.ErrorIs(t, err, os.ErrNotExist, "must not create the nested dir through the symlink")
 }
 
 func TestListAndRemove(t *testing.T) {
