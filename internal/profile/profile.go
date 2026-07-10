@@ -422,16 +422,67 @@ func copyFile(src string, dst string, dstRoot string) error {
 		return err
 	}
 
-	// O_NOFOLLOW on the destination too: an existing symlink at dst (e.g. seeding
-	// into a pre-populated store) must not be followed and truncated.
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, fi.Mode().Perm())
+	// Write to a fresh temp file in the guard-verified parent, then atomically
+	// rename it over dst. O_NOFOLLOW alone stops a destination SYMLINK from being
+	// followed, but a pre-existing HARD LINK at dst is a regular file: opening it
+	// O_TRUNC would write THROUGH it and mutate the shared inode, which may be a
+	// pathname OUTSIDE the profile. Creating a brand-new inode and renaming it
+	// over dst swaps the directory entry instead of writing through whatever dst
+	// currently points at, closing symlink and hard-link write-through together.
+	out, err := createTempFile(dst, fi.Mode().Perm())
 	if err != nil {
-		return fmt.Errorf("failed to create %s: %w", dst, err)
+		return err
 	}
-	defer func() { _ = out.Close() }()
+	// On any failure past this point the temp file is orphaned; remove it. On
+	// success the rename consumes it, so nothing is left to clean up.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = out.Close()
+			_ = os.Remove(out.Name())
+		}
+	}()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return fmt.Errorf("failed to copy %s: %w", src, err)
 	}
-	return out.Close()
+	// Persist the bytes before the rename so a crash cannot leave dst pointing at
+	// a fresh but empty inode.
+	if err := out.Sync(); err != nil {
+		return fmt.Errorf("failed to sync %s: %w", out.Name(), err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("failed to close %s: %w", out.Name(), err)
+	}
+	if err := os.Rename(out.Name(), dst); err != nil {
+		return fmt.Errorf("failed to replace %s: %w", dst, err)
+	}
+	committed = true
+	return nil
+}
+
+// createTempFile makes a fresh, exclusively-created temp file beside dst, inside
+// its already guard-verified parent (never /tmp, so the later os.Rename is an
+// atomic same-filesystem swap). O_CREATE|O_EXCL|O_NOFOLLOW guarantees a
+// brand-new inode: it fails rather than opening any pre-existing symlink, hard
+// link, or file at the candidate name, so nothing outside the profile is
+// touched. The final chmod pins the exact source permission bits, which the
+// umask on create may otherwise have masked off.
+func createTempFile(dst string, perm fs.FileMode) (*os.File, error) {
+	for n := 0; ; n++ {
+		name := fmt.Sprintf("%s.ccc-tmp-%d-%d", dst, os.Getpid(), n)
+		out, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, perm)
+		if err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue // name taken (or a link squats it); try the next candidate
+			}
+			return nil, fmt.Errorf("failed to create temp file for %s: %w", dst, err)
+		}
+		if err := out.Chmod(perm); err != nil {
+			_ = out.Close()
+			_ = os.Remove(name)
+			return nil, fmt.Errorf("failed to chmod %s: %w", name, err)
+		}
+		return out, nil
+	}
 }

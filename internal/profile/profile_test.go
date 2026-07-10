@@ -215,6 +215,37 @@ func TestSeedDoesNotFollowSymlinkedDestFile(t *testing.T) {
 	require.Equal(t, "KEEP", string(b), "symlink target must not be truncated or overwritten")
 }
 
+// A pre-existing HARD LINK at a destination file must not be written through to
+// its shared inode: O_NOFOLLOW stops a symlink but a hard link is a regular
+// file, so an O_TRUNC open would mutate the linked-to outside file. copyFile
+// writes a fresh inode to a temp file and renames it over dst, swapping the
+// directory entry instead of writing through the existing hard link.
+func TestSeedDoesNotWriteThroughHardlinkedDestFile(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte("KEEP"), 0o600))
+	// A hard link, not a symlink: dst is a regular file sharing the outside inode.
+	require.NoError(t, os.Link(outside, filepath.Join(s.ClaudeDir("work"), "CLAUDE.md")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "CLAUDE.md"), []byte("# new"), 0o600))
+
+	require.NoError(t, s.Seed("work", src), "seeding over a hard-linked dest must succeed via temp+rename")
+
+	// The outside inode must be untouched: the rename replaced the dir entry.
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.Equal(t, "KEEP", string(b), "hard-link target must not be written through")
+
+	// dst now points at a fresh inode holding the source content.
+	b, err = os.ReadFile(filepath.Join(s.ClaudeDir("work"), "CLAUDE.md"))
+	require.NoError(t, err)
+	require.Equal(t, "# new", string(b), "dst must hold the freshly copied source bytes")
+}
+
 // The profile's claude/ destination root being itself a symlink to an outside
 // directory must be rejected before anything is copied: without checking the
 // root, Seed would write the whole tree straight through it. ensureNoSymlinkPath
