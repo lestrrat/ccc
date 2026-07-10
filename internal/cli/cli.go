@@ -143,9 +143,19 @@ func parse(argv []string) (invocation, error) {
 			if len(before) < 2 {
 				return inv, fmt.Errorf("%s needs a profile name", arg)
 			}
+			// An explicit empty name is a hard error, never a fallback: silently
+			// resolving to .ccc.json or default_profile would run the wrong
+			// account. Omitting --profile entirely never reaches here.
+			if before[1] == "" {
+				return inv, fmt.Errorf("%s: empty profile name", arg)
+			}
 			inv.globals.profile, before = before[1], before[2:]
 		case strings.HasPrefix(arg, "--profile="):
-			inv.globals.profile, before = strings.TrimPrefix(arg, "--profile="), before[1:]
+			name := strings.TrimPrefix(arg, "--profile=")
+			if name == "" {
+				return inv, fmt.Errorf("--profile: empty profile name")
+			}
+			inv.globals.profile, before = name, before[1:]
 		case arg == "--runtime":
 			if len(before) < 2 {
 				return inv, fmt.Errorf("%s needs a runtime name", arg)

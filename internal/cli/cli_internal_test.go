@@ -103,6 +103,24 @@ func TestParse(t *testing.T) {
 		require.ErrorContains(t, err, "needs a runtime name")
 	})
 
+	// An explicit empty --profile must be rejected, not silently resolved to
+	// .ccc.json or default_profile, which would run the wrong account.
+	t.Run("an explicit empty --profile is an error", func(t *testing.T) {
+		_, err := parse([]string{"--profile", ""})
+		require.ErrorContains(t, err, "empty profile name")
+
+		_, err = parse([]string{"-p", ""})
+		require.ErrorContains(t, err, "empty profile name")
+
+		_, err = parse([]string{"--profile="})
+		require.ErrorContains(t, err, "empty profile name")
+
+		// Omitting --profile entirely still resolves via fallback, unchanged.
+		inv, err := parse(nil)
+		require.NoError(t, err)
+		require.Empty(t, inv.globals.profile)
+	})
+
 	t.Run("only the first -- splits", func(t *testing.T) {
 		inv, err := parse([]string{"--", "--", "x"})
 		require.NoError(t, err)
