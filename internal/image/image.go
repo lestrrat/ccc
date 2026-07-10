@@ -37,6 +37,17 @@ const contentHashArg = "CCC_CONTENT_HASH"
 //go:embed Dockerfile
 var baseDockerfile []byte
 
+// contentHashFooter is appended after the base Dockerfile AND any user
+// Dockerfile.extra, so it is always the final instruction in the composed
+// image. Stamping the label last guarantees a user's Dockerfile.extra cannot
+// override ccc.content-hash (which would make Exists reject a genuine build
+// forever), and keeps CCC_CONTENT_HASH out of ARG scope for the extra's build
+// steps. CCC_CONTENT_HASH is passed at build time only and is deliberately NOT
+// part of the hashed build args, so it never influences the hash it carries.
+const contentHashFooter = "\n# --- ccc content-hash verification (always last) ---\n" +
+	"ARG " + contentHashArg + "=\n" +
+	"LABEL " + contentHashLabel + "=${" + contentHashArg + "}\n"
+
 // ClaudeBin is where npm installs Claude Code in the image.
 //
 // ccc execs this absolute path rather than resolving "claude" on PATH: the
@@ -87,22 +98,25 @@ func NewBuilder(rt container.Runtime, cfg *config.Config, id container.Identity,
 	return &Builder{rt: rt, cfg: cfg, id: id, version: version}
 }
 
-// dockerfile returns the effective Dockerfile: the embedded base with the
-// user's Dockerfile.extra appended verbatim.
+// dockerfile returns the effective Dockerfile: the embedded base, then the
+// user's Dockerfile.extra (if any) appended verbatim, then ccc's content-hash
+// verification footer as the final instruction. The footer is last so a user's
+// Dockerfile.extra can neither override ccc.content-hash nor see
+// CCC_CONTENT_HASH in its ARG scope.
 func (b *Builder) dockerfile() ([]byte, error) {
-	out := make([]byte, 0, len(baseDockerfile)+256)
+	out := make([]byte, 0, len(baseDockerfile)+len(contentHashFooter)+256)
 	out = append(out, baseDockerfile...)
 
-	if b.cfg.Image.ExtraDockerfile == "" {
-		return out, nil
-	}
-	extra, err := os.ReadFile(b.cfg.Image.ExtraDockerfile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read %s: %w", b.cfg.Image.ExtraDockerfile, err)
+	if b.cfg.Image.ExtraDockerfile != "" {
+		extra, err := os.ReadFile(b.cfg.Image.ExtraDockerfile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", b.cfg.Image.ExtraDockerfile, err)
+		}
+		out = append(out, "\n# --- Dockerfile.extra ---\n"...)
+		out = append(out, extra...)
 	}
 
-	out = append(out, "\n# --- Dockerfile.extra ---\n"...)
-	out = append(out, extra...)
+	out = append(out, contentHashFooter...)
 	return out, nil
 }
 

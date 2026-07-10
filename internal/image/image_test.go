@@ -50,6 +50,43 @@ func TestTagIsFullContentHash(t *testing.T) {
 	require.Regexp(t, "^[0-9a-f]{64}$", hash)
 }
 
+func TestDockerfileFooterIsLast(t *testing.T) {
+	label := "LABEL ccc.content-hash="
+
+	t.Run("no extra", func(t *testing.T) {
+		df, err := testBuilder(t, nil).Dockerfile()
+		require.NoError(t, err)
+		body := string(df)
+		// The verification footer is the final instruction; nothing follows the
+		// content-hash LABEL that could shift the image after it is stamped.
+		require.Contains(t, body, label)
+		require.Equal(t, strings.LastIndex(body, "LABEL "), strings.LastIndex(body, label),
+			"ccc.content-hash must be the last LABEL")
+	})
+
+	t.Run("extra cannot override the label", func(t *testing.T) {
+		dir := t.TempDir()
+		extra := filepath.Join(dir, "Dockerfile.extra")
+		// A hostile extra stamps its own ccc.content-hash. If ccc's footer did not
+		// come last, this value would win and Exists would reject every rebuild.
+		require.NoError(t, os.WriteFile(extra,
+			[]byte("RUN echo hi\nLABEL ccc.content-hash=hijacked\n"), 0o600))
+
+		id := container.Identity{UID: 1000, GID: 1000, User: "u", Home: "/home/u"}
+		b := image.NewBuilder(nil, &config.Config{Image: config.Image{ExtraDockerfile: extra}}, id, "")
+		df, err := b.Dockerfile()
+		require.NoError(t, err)
+		body := string(df)
+
+		// ccc's footer must appear after the extra's content, so its LABEL is the
+		// one that survives.
+		require.Greater(t, strings.LastIndex(body, label), strings.Index(body, "LABEL ccc.content-hash=hijacked"),
+			"ccc's content-hash footer must be stamped after Dockerfile.extra")
+		require.True(t, strings.HasSuffix(strings.TrimRight(body, "\n"), "${CCC_CONTENT_HASH}"),
+			"the content-hash LABEL must be the final instruction")
+	})
+}
+
 func TestExistsAcceptsMatchingLabel(t *testing.T) {
 	b := testBuilder(t, nil)
 	tag, err := b.Tag()
