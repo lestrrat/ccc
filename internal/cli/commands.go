@@ -81,21 +81,20 @@ func cmdPin(a *app, args []string) error {
 	}
 
 	b := a.builderWith(rt, to)
-	tag, err := b.Tag()
-	if err != nil {
-		return err
-	}
 
 	// The tag hashes the pin, so an existing image already has this version.
 	// --no-cache still rebuilds: it is the only way to refresh the base image,
 	// apt, and golangci-lint, none of which the version pin can invalidate.
-	if noCache || !b.Exists(tag) {
-		// Build BEFORE persisting: a version that cannot be installed must not
-		// become a pin, or every later run would fail on an unbuildable image.
-		if err := b.Build(tag, noCache); err != nil {
-			return err
-		}
-	} else if current == to {
+	//
+	// Prepare composes the Dockerfile once and builds that exact snapshot, so
+	// Dockerfile.extra cannot change between the tag and the build. It builds
+	// BEFORE we persist: a version that cannot be installed must not become a
+	// pin, or every later run would fail on an unbuildable image.
+	_, built, err := b.Prepare(noCache)
+	if err != nil {
+		return err
+	}
+	if !built && current == to {
 		fmt.Fprintf(os.Stderr, "ccc: already on %s\n", to)
 		return nil
 	}

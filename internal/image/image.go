@@ -147,7 +147,7 @@ func (b *Builder) claudeVersion() string {
 
 // contentHash composes the Dockerfile and hashes that snapshot together with
 // the build args. It is a convenience over contentHashFor for callers that only
-// need the hash; Ensure composes once and calls contentHashFor directly so the
+// need the hash; Prepare composes once and calls contentHashFor directly so the
 // tag and the built image derive from the same bytes.
 func (b *Builder) contentHash() (string, error) {
 	df, err := b.dockerfile()
@@ -223,37 +223,40 @@ func (b *Builder) existsWith(tag, want string) bool {
 	return strings.TrimSpace(string(out)) == want
 }
 
-// Ensure returns the image tag, building the image first if it is missing.
+// Prepare composes the Dockerfile exactly once and threads that single snapshot
+// through the tag, the existence check, and the build context, returning the
+// resolved tag and whether a build actually ran.
 //
-// The Dockerfile is composed exactly once here and that single snapshot is used
-// for the tag, the existence check, and the build context. Reading
-// Dockerfile.extra again for the build could otherwise build different content
-// than the tag names and cache it under that benign content-hash tag.
-func (b *Builder) Ensure() (string, error) {
+// Composing once is what closes the tag<->build TOCTOU: reading Dockerfile.extra
+// again for the build could otherwise build different content than the tag names
+// and cache it under that benign content-hash tag. Ensure and `ccc pin` both go
+// through here, so neither path can reintroduce that split.
+//
+// With noCache, or when no verified image is present, it builds and reports
+// built=true. When a verified image already exists and noCache is false it
+// builds nothing and reports built=false — the signal `ccc pin` uses to decide
+// it is already on the requested version.
+func (b *Builder) Prepare(noCache bool) (tag string, built bool, err error) {
 	df, err := b.dockerfile()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	hash := b.contentHashFor(df)
-	tag := "ccc:" + hash
-	if b.existsWith(tag, hash) {
-		return tag, nil
+	tag = "ccc:" + hash
+	if noCache || !b.existsWith(tag, hash) {
+		if err := b.buildWith(tag, df, noCache); err != nil {
+			return "", false, err
+		}
+		return tag, true, nil
 	}
-	if err := b.buildWith(tag, df, false); err != nil {
-		return "", err
-	}
-	return tag, nil
+	return tag, false, nil
 }
 
-// Build composes the Dockerfile and builds the image. Ensure calls buildWith
-// directly with the snapshot it already hashed so the tag and the built image
-// always correspond.
-func (b *Builder) Build(tag string, noCache bool) error {
-	df, err := b.dockerfile()
-	if err != nil {
-		return err
-	}
-	return b.buildWith(tag, df, noCache)
+// Ensure returns the image tag, building the image first if it is missing. It is
+// Prepare with caching left on and the build flag discarded.
+func (b *Builder) Ensure() (string, error) {
+	tag, _, err := b.Prepare(false)
+	return tag, err
 }
 
 // buildWith builds the image from the given composed Dockerfile bytes,

@@ -165,6 +165,46 @@ func TestEnsureBuildsTheSnapshotItTagged(t *testing.T) {
 		"the built Dockerfile must hash to the tag it was built under")
 }
 
+func TestPrepareBuildsTheSnapshotItTagged(t *testing.T) {
+	dir := t.TempDir()
+	extra := filepath.Join(dir, "Dockerfile.extra")
+	require.NoError(t, os.WriteFile(extra, []byte("RUN echo pin\n"), 0o600))
+
+	rt := &captureRuntime{}
+	id := container.Identity{UID: 1000, GID: 1000, User: "u", Home: "/home/u"}
+	b := image.NewBuilder(rt, &config.Config{Image: config.Image{ExtraDockerfile: extra}}, id, "")
+
+	// `ccc pin` goes through Prepare, not Ensure. It must build the exact
+	// snapshot it tagged: hashing the Dockerfile written into the build context
+	// must reproduce the tag it was built under, or a Dockerfile.extra that
+	// changed between tagging and the build could cache different content under
+	// this benign tag.
+	tag, built, err := b.Prepare(false)
+	require.NoError(t, err)
+	require.True(t, built, "an absent image must be built")
+	require.Equal(t, tag, rt.tag)
+	require.NotEmpty(t, rt.dockerfile, "the build context Dockerfile must be captured")
+	require.Equal(t, "ccc:"+b.ContentHashFor(rt.dockerfile), rt.tag,
+		"the built Dockerfile must hash to the tag it was built under")
+}
+
+func TestPrepareSkipsVerifiedImage(t *testing.T) {
+	id := container.Identity{UID: 1000, GID: 1000, User: "u", Home: "/home/u"}
+	tag, err := image.NewBuilder(nil, &config.Config{}, id, "").Tag()
+	require.NoError(t, err)
+	hash := strings.TrimPrefix(tag, "ccc:")
+
+	// A verified image is present, so Prepare must not rebuild and must report
+	// built=false — the signal cmdPin uses for its "already on <version>"
+	// short-circuit. The runtime's BuildArgs would return nil, so a build here
+	// would fail loudly.
+	b := image.NewBuilder(&fakeRuntime{present: true, label: hash}, &config.Config{}, id, "")
+	got, built, err := b.Prepare(false)
+	require.NoError(t, err)
+	require.Equal(t, tag, got)
+	require.False(t, built, "a verified image must not be rebuilt")
+}
+
 func TestEnsureShim(t *testing.T) {
 	root := t.TempDir()
 
