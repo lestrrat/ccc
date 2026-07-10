@@ -1,6 +1,7 @@
 package profile_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -385,6 +386,24 @@ func TestSeedCopiesSymlinkedSidecar(t *testing.T) {
 	b, err := os.ReadFile(s.ClaudeJSON("work"))
 	require.NoError(t, err)
 	require.JSONEq(t, `{"projects":{"p":1}}`, string(b), "symlinked sidecar must be followed and copied, not dropped")
+}
+
+// claude.json holds credentials and MCP state. Materialize creates it 0600, and
+// seeding must not widen that to whatever mode the host's ~/.claude.json happens
+// to carry — a world-readable host file would otherwise leak the profile's copy.
+func TestSeedKeepsSidecarPrivate(t *testing.T) {
+	s, _ := newStore(t)
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(src+".json", []byte(`{"projects":{}}`), 0o644))
+
+	require.NoError(t, s.Seed("work", src))
+
+	fi, err := os.Stat(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o600), fi.Mode().Perm(),
+		"a 0644 host sidecar must not widen the profile's claude.json")
 }
 
 // A pre-populated store whose claude/agents is a symlink to an outside dir must

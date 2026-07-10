@@ -411,8 +411,11 @@ func (s *Store) Seed(name string, from string) error {
 	// The sidecar's destination parent is the profile dir itself (ccc-owned),
 	// so pass it as the no-symlink root: there is nothing between it and the
 	// file to walk.
+	// 0600, not the source's mode: claude.json carries credentials and MCP state,
+	// and Materialize created it 0600. A world-readable ~/.claude.json on the host
+	// must not widen the profile's copy.
 	dst := s.ClaudeJSON(name)
-	return copyFile(resolved, dst, filepath.Dir(dst))
+	return copyFile(resolved, dst, filepath.Dir(dst), 0o600)
 }
 
 // ValidateName rejects names that would escape the profiles directory.
@@ -448,7 +451,8 @@ func copyTree(src string, dst string) error {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		return copyFile(path, target, dst)
+		// perm 0: the tree mirrors each source file's own mode.
+		return copyFile(path, target, dst, 0)
 	})
 }
 
@@ -514,7 +518,12 @@ func ensureNoSymlinkPath(root string, target string) error {
 	return nil
 }
 
-func copyFile(src string, dst string, dstRoot string) error {
+// copyFile copies src to dst atomically. perm, when non-zero, is the mode the
+// destination gets regardless of the source's; perm 0 mirrors the source mode.
+// The override exists because the profile's claude.json holds credentials: a
+// world-readable 0644 ~/.claude.json on the host must not widen the 0600 file
+// Materialize created, so seeding it forces 0600 rather than inheriting.
+func copyFile(src string, dst string, dstRoot string, perm fs.FileMode) error {
 	// Open the source with O_NOFOLLOW so a symlink swapped in after copyTree's
 	// walk (a TOCTOU race) is not followed to a file outside the source tree.
 	// A symlink now surfaces as ELOOP here; treat it — and any dangling/racing
@@ -559,7 +568,11 @@ func copyFile(src string, dst string, dstRoot string) error {
 	// pathname OUTSIDE the profile. Creating a brand-new inode and renaming it
 	// over dst swaps the directory entry instead of writing through whatever dst
 	// currently points at, closing symlink and hard-link write-through together.
-	out, err := createTempFile(dst, fi.Mode().Perm())
+	mode := fi.Mode().Perm()
+	if perm != 0 {
+		mode = perm.Perm()
+	}
+	out, err := createTempFile(dst, mode)
 	if err != nil {
 		return err
 	}
