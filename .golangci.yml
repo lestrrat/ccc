@@ -1,0 +1,67 @@
+version: "2"
+linters:
+  default: all
+  disable:
+    - copyloopvar
+    - cyclop
+    - depguard
+    - dupl
+    - dupword          # false positives on aligned help-text columns
+    - embeddedstructfieldcheck
+    - err113
+    - errorlint
+    - exhaustive
+    - exhaustruct
+    - forbidigo
+    - funcorder
+    - funlen
+    - gochecknoglobals
+    - gochecknoinits
+    - goconst          # flag/command string literals repeat by nature in a CLI
+    - gocognit
+    - gocritic
+    - gocyclo
+    - godot
+    - godox
+    - gomodguard
+    - gosec
+    - gosmopolitan
+    - iface
+    - inamedparam
+    - interfacebloat
+    - ireturn
+    - lll
+    - maintidx
+    - makezero
+    - mnd
+    - nakedret
+    - nestif
+    - nilerr           # ccc intentionally swallows errors from container-written files
+    - nlreturn
+    - noctx            # short-lived local git/podman commands; no context threaded
+    - noinlineerr
+    - nonamedreturns
+    - paralleltest
+    - perfsprint
+    - prealloc
+    - recvcheck
+    - revive
+    - tagliatelle
+    - testifylint
+    - testpackage
+    - thelper
+    - tparallel
+    - unparam          # command handlers share a fixed signature (always error)
+    - varnamelen
+    - wastedassign
+    - wrapcheck
+    - wsl
+    - wsl_v5
+  settings:
+    goconst:
+      min-occurrences: 5
+    govet:
+      disable:
+        - shadow
+        - fieldalignment
+      enable-all: true

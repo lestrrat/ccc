@@ -33,7 +33,7 @@ func Latest(ctx context.Context, pkg string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to query npm registry: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("npm registry returned %s for %s", res.Status, pkg)

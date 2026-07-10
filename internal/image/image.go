@@ -136,7 +136,7 @@ func (b *Builder) Tag() (string, error) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		fmt.Fprintf(h, "\x00%s=%s", k, args[k])
+		_, _ = fmt.Fprintf(h, "\x00%s=%s", k, args[k])
 	}
 
 	return "ccc:" + hex.EncodeToString(h.Sum(nil))[:12], nil
@@ -177,7 +177,7 @@ func (b *Builder) Build(tag string, noCache bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create build context: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), df, 0o600); err != nil {
 		return fmt.Errorf("failed to write Dockerfile: %w", err)

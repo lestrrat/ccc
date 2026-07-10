@@ -227,18 +227,18 @@ func WriteAtomic(path string, b []byte, perm os.FileMode) error {
 	}
 	tmpName := tmp.Name()
 	// On any failure past this point, do not leave the temp behind.
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("failed to chmod %s: %w", tmpName, err)
 	}
 	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("failed to write %s: %w", tmpName, err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("failed to sync %s: %w", tmpName, err)
 	}
 	if err := tmp.Close(); err != nil {

@@ -103,12 +103,10 @@ func TestConcurrentWritesStayValid(t *testing.T) {
 	root := t.TempDir()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 20 {
+		wg.Go(func() {
 			_ = config.SetDefaultClaudeVersion(root, "2.1.205")
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -152,7 +150,8 @@ func TestSetDefaultClaudeVersion(t *testing.T) {
 		require.NoError(t, json.Unmarshal(b, &raw))
 
 		require.EqualValues(t, 42, raw["future_toplevel"])
-		image := raw["image"].(map[string]any)
+		image, ok := raw["image"].(map[string]any)
+		require.True(t, ok)
 		require.Equal(t, "keep me", image["future_image_key"])
 		require.Equal(t, "2.1.205", image["default_claude_version"])
 	})

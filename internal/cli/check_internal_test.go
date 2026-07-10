@@ -17,10 +17,10 @@ import (
 // resolves cwd with EvalSymlinks; this checks the resulting invariant holds.
 func TestSymlinkedCwdIsUnderRepo(t *testing.T) {
 	base := t.TempDir()
-	real := filepath.Join(base, "real")
-	require.NoError(t, os.MkdirAll(real, 0o755))
-	require.NoError(t, exec.Command("git", "-C", real, "init", "-q").Run())
-	require.NoError(t, os.Symlink("real", filepath.Join(base, "link")))
+	realDir := filepath.Join(base, "realDir")
+	require.NoError(t, os.MkdirAll(realDir, 0o755))
+	require.NoError(t, exec.Command("git", "-C", realDir, "init", "-q").Run())
+	require.NoError(t, os.Symlink("realDir", filepath.Join(base, "link")))
 
 	logical := filepath.Join(base, "link")
 	resolved, err := filepath.EvalSymlinks(logical)

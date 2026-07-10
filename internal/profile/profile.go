@@ -307,7 +307,7 @@ func copyFile(src string, dst string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open %s: %w", src, err)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	fi, err := in.Stat()
 	if err != nil {
@@ -321,7 +321,7 @@ func copyFile(src string, dst string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create %s: %w", dst, err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return fmt.Errorf("failed to copy %s: %w", src, err)
