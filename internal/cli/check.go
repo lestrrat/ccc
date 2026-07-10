@@ -93,9 +93,12 @@ func cmdCheck(a *app, args []string) error {
 	// until something actually ran.
 	step("container", smokeTest(rt, a.id, tag, mounts, a.cwd), "starts with these mounts")
 
-	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-		fmt.Printf("      %-14s %s\n", "ssh agent", sock)
-	} else {
+	switch {
+	case a.sshAuthSock() != "":
+		fmt.Printf("      %-14s %s (forwarded read-only)\n", "ssh agent", a.sshAuthSock())
+	case os.Getenv("SSH_AUTH_SOCK") != "":
+		fmt.Printf("      %-14s %s\n", "ssh agent", "SSH_AUTH_SOCK set but not a socket; not forwarded")
+	default:
 		fmt.Printf("      %-14s %s\n", "ssh agent", "not running (git over ssh needs a key in ~/.ssh)")
 	}
 

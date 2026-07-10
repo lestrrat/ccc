@@ -377,11 +377,13 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 	}
 
 	// Forward the SSH agent socket at its original path, so the inherited
-	// SSH_AUTH_SOCK value stays valid inside the container.
-	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-		if _, err := os.Stat(sock); err == nil {
-			out = append(out, container.Mount{Source: sock, Target: sock})
-		}
+	// SSH_AUTH_SOCK value stays valid inside the container. Read-only, and only
+	// when it is actually a socket: an unvalidated rw mount of whatever
+	// SSH_AUTH_SOCK points at lets a hostile env/direnv mount an arbitrary path
+	// read-write (SSH_AUTH_SOCK=$HOME mounts the whole home; =~/.ssh/id_rsa
+	// overlays the ro .ssh mount with a writable key).
+	if sock := a.sshAuthSock(); sock != "" {
+		out = append(out, container.Mount{Source: sock, Target: sock, ReadOnly: true})
 	}
 	return out, nil
 }
@@ -463,10 +465,13 @@ func (a *app) dirs() []string {
 // variables ccc rewrites itself.
 func (a *app) env() map[string]string {
 	m := ccenv.Filter(os.Environ(), a.cfg.Env.Deny, a.cfg.Env.Allow)
-	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-		if _, err := os.Stat(sock); err == nil {
-			m["SSH_AUTH_SOCK"] = sock
-		}
+	// SSH_AUTH_SOCK is controlled solely by the validated snapshot: drop whatever
+	// Filter produced (env.allow could re-admit the raw host value) and re-add it
+	// only when it names an actual socket ccc mounts, so the forwarded value
+	// always matches a real read-only socket mount (see mounts()).
+	delete(m, "SSH_AUTH_SOCK")
+	if sock := a.sshAuthSock(); sock != "" {
+		m["SSH_AUTH_SOCK"] = sock
 	}
 
 	// GOCACHE defaults under ~/.cache, so the profile cache mount already
@@ -498,6 +503,34 @@ func underRoot(path string, root string) bool {
 		return false
 	}
 	return rel == "." || !strings.HasPrefix(rel, "..")
+}
+
+// sshAuthSock returns the validated SSH_AUTH_SOCK, snapshotted once per
+// invocation so the mount, the forwarded env value, and `ccc check` never
+// disagree if the socket appears or disappears mid-run.
+func (a *app) sshAuthSock() string {
+	if a.sshSock == nil {
+		v := resolveSSHAuthSock()
+		a.sshSock = &v
+	}
+	return *a.sshSock
+}
+
+// resolveSSHAuthSock returns SSH_AUTH_SOCK only when it points at an actual
+// socket, else "". Stat (following symlinks) so a legitimate symlink-to-socket
+// still forwards; the ModeSocket check on the resolved target is what stops a
+// hostile SSH_AUTH_SOCK (a directory like $HOME, or a regular file like a
+// private key) from turning into an arbitrary rw bind mount.
+func resolveSSHAuthSock() string {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return ""
+	}
+	fi, err := os.Stat(sock)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		return ""
+	}
+	return sock
 }
 
 func isTerminal(f *os.File) bool {
