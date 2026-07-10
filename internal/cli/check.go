@@ -48,21 +48,22 @@ func cmdCheck(a *app, args []string) error {
 	}
 	step("profile", nil, res.String())
 
+	// The mount-source invariant a real run enforces: a run calls Materialize
+	// (which refuses a symlinked claude/ dir or a symlinked/hard-linked
+	// claude.json) before it touches anything under the profile, so check must
+	// apply the same guard first — otherwise reading the pin below would follow a
+	// symlinked claude/ out of the profile before the failure is ever reported.
+	// Non-mutating, so the diagnostic never creates a profile as a side effect.
+	if err := a.store.ValidateMountSources(res.Name); err != nil {
+		step("mount sources", err, "")
+		return errFailed(failed)
+	}
+
 	pinned, err := a.claudeVersion(res.Name)
 	if err != nil {
 		step("claude pin", err, "")
 	} else {
 		step("claude pin", nil, orLatest(pinned))
-	}
-
-	// The mount-source invariant a real run enforces: a run calls Materialize
-	// (which refuses a symlinked claude/ dir or a symlinked/hard-linked
-	// claude.json) before preflight, so check must apply the same guard or it
-	// reports green on a profile the run would reject. Non-mutating, so the
-	// diagnostic never creates a profile as a side effect.
-	if err := a.store.ValidateMountSources(res.Name); err != nil {
-		step("mount sources", err, "")
-		return errFailed(failed)
 	}
 
 	// The real preflight: working directory inside a mounted dir, and every
