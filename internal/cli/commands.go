@@ -42,8 +42,15 @@ func cmdPin(a *app, args []string) error {
 	// Deliberately does NOT fall back to .ccc.json — pinning is a rare,
 	// deliberate act and must not silently depend on the current directory.
 	scope := a.globals.profile
-	if scope != "" && !a.store.Exists(scope) {
-		return fmt.Errorf("%q: %w", scope, profile.ErrNotExist)
+	if scope != "" {
+		// Validate before Exists: a traversal name like "../../../.ssh" resolves
+		// to an existing dir, passes Exists, and would otherwise reach a path op.
+		if err := profile.ValidateName(scope); err != nil {
+			return err
+		}
+		if !a.store.Exists(scope) {
+			return fmt.Errorf("%q: %w", scope, profile.ErrNotExist)
+		}
 	}
 
 	to, err := resolveTarget(to, func() (string, error) {

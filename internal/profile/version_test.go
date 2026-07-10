@@ -134,3 +134,12 @@ func TestClaudeVersionLatestIsReadableButNotAPin(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "latest", v, "readable, so a hand-written file still works")
 }
+
+// The path-creating Store ops must reject a traversal name (matching Remove),
+// so a scope like "../../../.ssh" cannot write outside profiles/.
+func TestPathOpsRejectTraversal(t *testing.T) {
+	s, _ := newStore(t)
+	require.ErrorContains(t, s.Materialize("../../../.ssh"), "invalid profile name")
+	require.ErrorContains(t, s.SetClaudeVersion("../../etc", "2.1.205"), "invalid profile name")
+	require.ErrorContains(t, s.Seed("../../x", t.TempDir()), "invalid profile name")
+}

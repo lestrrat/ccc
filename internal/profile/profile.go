@@ -206,7 +206,14 @@ func (s *Store) Create(name string) error {
 // Materialize ensures the profile's mount sources exist. claude.json must be a
 // regular file before it is bind-mounted, otherwise the runtime creates a
 // directory in its place.
+//
+// ValidateName is the choke point for the path-creating operations: Create,
+// SetClaudeVersion, and Seed all funnel through here, so an unvalidated `name`
+// with `..` segments cannot MkdirAll/write outside profiles/.
 func (s *Store) Materialize(name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(s.ClaudeDir(name), 0o700); err != nil {
 		return fmt.Errorf("failed to create profile dir: %w", err)
 	}
