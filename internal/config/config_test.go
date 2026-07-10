@@ -120,6 +120,35 @@ func TestConcurrentWritesStayValid(t *testing.T) {
 	require.Equal(t, config.FileName, entries[0].Name())
 }
 
+// A first-run bootstrap (Create) racing a global `ccc pin` (SetDefaultClaudeVersion)
+// on an absent config must not lose a key to a write built on a stale read. With the
+// read-modify-write serialized under a file lock, each merges into whatever is on disk:
+// SetDefaultClaudeVersion never clobbers default_profile, and Create merges its key into
+// the file the pin wrote rather than skipping it. So BOTH keys survive regardless of
+// which write happened first — the corruption the lock exists to prevent.
+func TestConcurrentBootstrapAndPinPreserveKeys(t *testing.T) {
+	t.Setenv("CCC_RUNTIME", "")
+
+	// Loop so the interleaving that dropped a key surfaces under -race.
+	for range 200 {
+		root := t.TempDir()
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			_, _ = config.Create(root, "default")
+		})
+		wg.Go(func() {
+			_ = config.SetDefaultClaudeVersion(root, "2.1.205")
+		})
+		wg.Wait()
+
+		cfg, err := config.Load(root)
+		require.NoError(t, err, "config must remain parseable")
+		require.Equal(t, "2.1.205", cfg.Image.DefaultClaudeVersion, "the pin's key is never lost")
+		require.Equal(t, "default", cfg.DefaultProfile, "the bootstrap key is never lost")
+	}
+}
+
 func TestSetDefaultClaudeVersion(t *testing.T) {
 	t.Run("sets image.default_claude_version and preserves known keys", func(t *testing.T) {
 		root := t.TempDir()
@@ -215,18 +244,29 @@ func TestCreate(t *testing.T) {
 		require.Equal(t, map[string]any{"default_profile": "default"}, raw)
 	})
 
-	t.Run("leaves an existing config completely untouched", func(t *testing.T) {
+	t.Run("merges default_profile into a config that lacks it, preserving other keys", func(t *testing.T) {
 		root := t.TempDir()
-		body := `{"runtime": "docker", "mounts": {"roots": ["/opt/work"]}}`
-		write(t, filepath.Join(root, config.FileName), body)
+		// The file a global `ccc pin` writes before any bootstrap: other keys, but
+		// no default_profile. Bootstrap must ADD the key, not skip the file.
+		write(t, filepath.Join(root, config.FileName),
+			`{"runtime":"docker","image":{"default_claude_version":"2.1.205","future_image_key":"keep me"},"future_toplevel":42}`)
 
 		created, err := config.Create(root, "default")
 		require.NoError(t, err)
-		require.False(t, created, "must report that it did not write")
+		require.True(t, created, "must report that it added default_profile")
 
 		b, err := os.ReadFile(filepath.Join(root, config.FileName))
 		require.NoError(t, err)
-		require.Equal(t, body, string(b), "byte-for-byte unchanged")
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(b, &raw))
+
+		require.Equal(t, "default", raw["default_profile"], "bootstrap key added")
+		require.Equal(t, "docker", raw["runtime"], "sibling key preserved")
+		require.EqualValues(t, 42, raw["future_toplevel"], "unmodeled key preserved")
+		image, ok := raw["image"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "2.1.205", image["default_claude_version"], "the pin's key is never lost")
+		require.Equal(t, "keep me", image["future_image_key"], "unmodeled image key preserved")
 	})
 
 	t.Run("never overwrites an existing default_profile", func(t *testing.T) {
