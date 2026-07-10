@@ -233,9 +233,35 @@ func (a *app) preflight(name string) ([]container.Mount, error) {
 	// The implicit workspace dir is the cwd when it is not in a repository.
 	// Refuse the dangerous ones before anything else looks at them.
 	for _, d := range workspace.Dirs(a.cwd) {
-		if err := a.checkImplicitDir(d); err != nil {
-			return nil, fmt.Errorf("%w\nrun ccc inside a git repository, or name directories in mounts.dirs in %s/%s",
+		if err := a.checkMountDir(d); err != nil {
+			return nil, fmt.Errorf("%w implicitly\nrun ccc inside a git repository, or name directories in mounts.dirs in %s/%s",
 				err, a.cfg.Root, config.FileName)
+		}
+	}
+
+	// .ccc.json is read by walking up from the working directory, which is
+	// inside the container-writable repo — so its `dirs` are UNTRUSTED. A
+	// contained process could write {"dirs":["/"]} or {"dirs":["~"]} to escalate
+	// the next run's mounts to host root/home read-write. Apply the same refusal
+	// here. (config.json's mounts.dirs is host-only and stays trusted.)
+	//
+	// The guard resolves symlinks first: the container could otherwise plant
+	// `repo/link -> /` and list `link`, whose literal path passes the check while
+	// the bind mount follows the symlink to host root. The resolved path is
+	// written back so mounts() binds THE SAME canonical path that was checked —
+	// mounting the original symlink would reintroduce the bypass. A dir that does
+	// not yet resolve is left for the os.Stat in mounts() to reject.
+	if a.dirFile != nil {
+		for i, d := range a.dirFile.Dirs {
+			target := d
+			if resolved, err := filepath.EvalSymlinks(d); err == nil {
+				target = resolved
+			}
+			if err := a.checkMountDir(target); err != nil {
+				return nil, fmt.Errorf("%w\n%s lists it in \"dirs\", but that file is inside the container-writable repository and may not mount /, your home, or an ancestor",
+					err, config.DirConfigName)
+			}
+			a.dirFile.Dirs[i] = target
 		}
 	}
 	if err := a.checkWorkdir(); err != nil {
@@ -381,20 +407,29 @@ func (a *app) ghConfig(name string) (string, error) {
 	return dir, nil
 }
 
-// checkImplicitDir refuses to mount a directory that was never named.
+// checkMountDir refuses a directory that must never be a mount target: the
+// filesystem root, the home directory, or an ancestor of it.
 //
 // Outside a git repository the implicit workspace dir is the cwd itself. Run
 // `ccc` from $HOME and that would mount the whole home read-write — the exact
 // exposure the narrow default exists to prevent, arrived at by accident.
 // Naming such a directory in mounts.dirs is fine; falling into it is not.
-func (a *app) checkImplicitDir(dir string) error {
+func (a *app) checkMountDir(dir string) error {
+	// Compare against the CANONICAL home: callers pass a symlink-resolved dir,
+	// but a.id.Home (from user.Current) may itself be a symlink spelling. Without
+	// resolving both sides, a dir that resolves to the real home path slips past
+	// the equality/ancestor checks on a symlink-home system.
+	home := a.id.Home
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
 	switch {
 	case dir == "/":
-		return fmt.Errorf("refusing to mount / implicitly")
-	case dir == a.id.Home:
-		return fmt.Errorf("refusing to mount your home directory %s implicitly", dir)
-	case underRoot(a.id.Home, dir):
-		return fmt.Errorf("refusing to mount %s implicitly: it contains your home directory", dir)
+		return fmt.Errorf("refusing to mount /")
+	case dir == home:
+		return fmt.Errorf("refusing to mount your home directory %s", dir)
+	case underRoot(home, dir):
+		return fmt.Errorf("refusing to mount %s: it contains your home directory", dir)
 	default:
 		return nil
 	}
