@@ -282,7 +282,20 @@ func (s *Store) Seed(name string, from string) error {
 		}
 		return fmt.Errorf("failed to stat %s: %w", sidecar, err)
 	}
-	return copyFile(sidecar, s.ClaudeJSON(name))
+	// The sidecar is a single known file; unlike the tree, following a symlink
+	// here is INTENDED (dotfile managers symlink ~/.claude.json), the same
+	// rationale as the tree root's EvalSymlinks above. Resolve it to its
+	// regular-file target so copyFile's no-follow open sees a real file rather
+	// than skipping the link on ELOOP and leaving the materialized empty {}.
+	resolved := sidecar
+	if r, err := filepath.EvalSymlinks(sidecar); err == nil {
+		resolved = r
+	}
+	// The sidecar's destination parent is the profile dir itself (ccc-owned),
+	// so pass it as the no-symlink root: there is nothing between it and the
+	// file to walk.
+	dst := s.ClaudeJSON(name)
+	return copyFile(resolved, dst, filepath.Dir(dst))
 }
 
 // ValidateName rejects names that would escape the profiles directory.
@@ -312,16 +325,52 @@ func copyTree(src string, dst string) error {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		return copyFile(path, target)
+		return copyFile(path, target, dst)
 	})
 }
 
-func copyFile(src string, dst string) error {
+// ensureNoSymlinkParent rejects a destination that would be reached through a
+// symlinked ancestor directory. O_NOFOLLOW guards only the FINAL component, so a
+// pre-existing symlink among dst's parents (e.g. a hostile claude/agents ->
+// /outside in a pre-populated store) would still let the copy land outside the
+// profile. Every component strictly between root and dst is lstat'd and a
+// symlink is refused. root is the profile's ccc-owned claude/ destination dir;
+// components above it are ccc-owned and need not be walked.
+func ensureNoSymlinkParent(root string, dst string) error {
+	rel, err := filepath.Rel(root, dst)
+	if err != nil {
+		return err
+	}
+	dir := root
+	for part := range strings.SplitSeq(filepath.Dir(rel), string(filepath.Separator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		dir = filepath.Join(dir, part)
+		fi, err := os.Lstat(dir)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue // not created yet; MkdirAll will make a real directory
+			}
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to seed through symlinked parent %s", dir)
+		}
+	}
+	return nil
+}
+
+func copyFile(src string, dst string, dstRoot string) error {
 	// Open the source with O_NOFOLLOW so a symlink swapped in after copyTree's
 	// walk (a TOCTOU race) is not followed to a file outside the source tree.
 	// A symlink now surfaces as ELOOP here; treat it — and any dangling/racing
 	// link — as a runtime artifact to skip, matching copyTree's non-regular skip.
-	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// O_NONBLOCK mirrors config.ReadStateFile: opening a FIFO swapped in during
+	// the race returns immediately instead of blocking (hanging the host ccc
+	// process) before the fstat regular-file check below can reject it. Regular
+	// files ignore O_NONBLOCK, so the copy is unaffected.
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) || errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -339,6 +388,11 @@ func copyFile(src string, dst string) error {
 	// FIFO/device swapped in during the race). Skip anything that is not.
 	if !fi.Mode().IsRegular() {
 		return nil
+	}
+	// Guard the destination's PARENTS too: O_NOFOLLOW below only protects the
+	// final component, not a symlinked ancestor in a pre-populated store.
+	if err := ensureNoSymlinkParent(dstRoot, dst); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err

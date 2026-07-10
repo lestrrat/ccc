@@ -96,8 +96,11 @@ func TestSeedSkipsIrregularFiles(t *testing.T) {
 }
 
 // A source entry that is a symlink to a file OUTSIDE the tree must never have
-// its target copied into the profile: copyFile opens with O_NOFOLLOW so a
-// symlink swapped in mid-walk (a TOCTOU race) cannot exfiltrate outside data.
+// its target copied into the profile. This is the first line of defense:
+// copyTree's WalkDir sees the symlink as non-regular and skips it before
+// copyFile is ever called. copyFile's own O_NOFOLLOW source open (the TOCTOU
+// race defense) is exercised by the destination-symlink tests below, which
+// actually reach it.
 func TestSeedDoesNotFollowSymlinkOutsideTree(t *testing.T) {
 	s, _ := newStore(t)
 
@@ -118,6 +121,71 @@ func TestSeedDoesNotFollowSymlinkOutsideTree(t *testing.T) {
 	require.NoError(t, err)
 	_, err = os.Lstat(filepath.Join(s.ClaudeDir("work"), "escape.txt"))
 	require.ErrorIs(t, err, os.ErrNotExist, "symlink to outside file must not be copied")
+}
+
+// A symlinked ~/.claude.json sidecar (dotfile managers commonly symlink it)
+// must be followed and its target copied, not silently dropped: following the
+// symlink is INTENDED for this single known file, unlike the tree copy. Before
+// the fix, copyFile skipped it on ELOOP, leaving the materialized empty {}.
+func TestSeedCopiesSymlinkedSidecar(t *testing.T) {
+	s, _ := newStore(t)
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "CLAUDE.md"), []byte("# hi"), 0o600))
+
+	// The real registry lives elsewhere; the sidecar beside ~/.claude is a link.
+	target := filepath.Join(t.TempDir(), "real.claude.json")
+	require.NoError(t, os.WriteFile(target, []byte(`{"projects":{"p":1}}`), 0o600))
+	require.NoError(t, os.Symlink(target, src+".json"))
+
+	require.NoError(t, s.Seed("work", src))
+
+	b, err := os.ReadFile(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"projects":{"p":1}}`, string(b), "symlinked sidecar must be followed and copied, not dropped")
+}
+
+// A pre-populated store whose claude/agents is a symlink to an outside dir must
+// not let seeding write agents/a.md through it. O_NOFOLLOW guards only the
+// final path component, so copyFile lstat's every parent under the profile's
+// claude/ root and refuses a symlinked one. This drives copyFile directly: the
+// dest exists as a symlink at open time, exercising the parent-symlink guard.
+func TestSeedRejectsSymlinkedDestParent(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, filepath.Join(s.ClaudeDir("work"), "agents")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "agents"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "agents", "a.md"), []byte("agent"), 0o600))
+
+	require.Error(t, s.Seed("work", src), "seeding through a symlinked parent must fail")
+	_, err := os.Stat(filepath.Join(outside, "a.md"))
+	require.ErrorIs(t, err, os.ErrNotExist, "must not write through the symlinked parent")
+}
+
+// A pre-existing symlink AT a destination file must not be followed and its
+// target truncated: copyFile opens the destination O_NOFOLLOW. This reaches
+// copyFile's destination no-follow branch (the symlink exists at open time).
+func TestSeedDoesNotFollowSymlinkedDestFile(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte("KEEP"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(s.ClaudeDir("work"), "CLAUDE.md")))
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "CLAUDE.md"), []byte("# new"), 0o600))
+
+	require.Error(t, s.Seed("work", src), "seeding onto a symlinked dest file must fail")
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.Equal(t, "KEEP", string(b), "symlink target must not be truncated or overwritten")
 }
 
 func TestListAndRemove(t *testing.T) {
