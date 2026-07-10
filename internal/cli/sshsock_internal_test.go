@@ -33,6 +33,11 @@ func TestSSHAuthSock(t *testing.T) {
 	defer func() { _ = l.Close() }()
 	t.Setenv("SSH_AUTH_SOCK", sockPath)
 	require.Equal(t, sockPath, resolveSSHAuthSock(), "a real socket is forwarded")
+
+	link := filepath.Join(dir, "agent.link")
+	require.NoError(t, os.Symlink(sockPath, link))
+	t.Setenv("SSH_AUTH_SOCK", link)
+	require.Equal(t, link, resolveSSHAuthSock(), "a symlink to a socket is a valid agent socket")
 }
 
 // env.allow must not re-admit a raw, invalid SSH_AUTH_SOCK: the forwarded value

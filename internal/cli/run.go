@@ -482,15 +482,16 @@ func (a *app) sshAuthSock() string {
 }
 
 // resolveSSHAuthSock returns SSH_AUTH_SOCK only when it points at an actual
-// socket, else "". Lstat (not Stat) so a symlinked value is not silently
-// followed, and the ModeSocket check is what stops a hostile SSH_AUTH_SOCK from
-// turning into an arbitrary rw bind mount.
+// socket, else "". Stat (following symlinks) so a legitimate symlink-to-socket
+// still forwards; the ModeSocket check on the resolved target is what stops a
+// hostile SSH_AUTH_SOCK (a directory like $HOME, or a regular file like a
+// private key) from turning into an arbitrary rw bind mount.
 func resolveSSHAuthSock() string {
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
 		return ""
 	}
-	fi, err := os.Lstat(sock)
+	fi, err := os.Stat(sock)
 	if err != nil || fi.Mode()&os.ModeSocket == 0 {
 		return ""
 	}
