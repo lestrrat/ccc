@@ -120,6 +120,39 @@ func TestConcurrentWritesStayValid(t *testing.T) {
 	require.Equal(t, config.FileName, entries[0].Name())
 }
 
+// A first-run bootstrap (Create) racing a global `ccc pin` (SetDefaultClaudeVersion)
+// on an absent config must not lose a key to a write built on a stale read. With the
+// read-modify-write serialized under a file lock, SetDefaultClaudeVersion always merges
+// into whatever is on disk and Create never clobbers what the pin wrote, so the pin's
+// image.default_claude_version is never dropped — the corruption the lock exists to
+// prevent. When Create wins the race, default_profile survives alongside it; when the
+// pin creates the file first, Create leaves it be, so default_profile may be absent, but
+// it is never wrong.
+func TestConcurrentBootstrapAndPinPreserveKeys(t *testing.T) {
+	t.Setenv("CCC_RUNTIME", "")
+
+	// Loop so the interleaving that dropped a key surfaces under -race.
+	for range 200 {
+		root := t.TempDir()
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			_, _ = config.Create(root, "default")
+		})
+		wg.Go(func() {
+			_ = config.SetDefaultClaudeVersion(root, "2.1.205")
+		})
+		wg.Wait()
+
+		cfg, err := config.Load(root)
+		require.NoError(t, err, "config must remain parseable")
+		require.Equal(t, "2.1.205", cfg.Image.DefaultClaudeVersion, "the pin's key is never lost")
+		if cfg.DefaultProfile != "" {
+			require.Equal(t, "default", cfg.DefaultProfile, "bootstrap key, when present, is intact")
+		}
+	}
+}
+
 func TestSetDefaultClaudeVersion(t *testing.T) {
 	t.Run("sets image.default_claude_version and preserves known keys", func(t *testing.T) {
 		root := t.TempDir()

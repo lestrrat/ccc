@@ -293,6 +293,36 @@ func WriteAtomic(path string, b []byte, perm os.FileMode) error {
 	return nil
 }
 
+// withConfigLock serializes a read-modify-write of config.json against other
+// callers in this process and in other ccc processes. WriteAtomic makes a single
+// write atomic, but does not order two racing read-modify-writes: a first-run
+// bootstrap (Create) and a global `ccc pin` (SetDefaultClaudeVersion) can each
+// read the absent-or-old file and then write, and the later write clobbers the
+// earlier one's key. This holds an exclusive advisory lock (flock) for the whole
+// of fn so the read and the write are one indivisible step.
+//
+// The lock is taken on the config root directory's own descriptor, so it needs
+// no lock file and leaves nothing behind for callers that count the directory's
+// entries. flock is per open file description, so two goroutines that each open
+// the directory contend correctly, and the lock is released reliably on return.
+func withConfigLock(root string, fn func() error) error {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return fmt.Errorf("failed to create %s: %w", root, err)
+	}
+	f, err := os.Open(root)
+	if err != nil {
+		return fmt.Errorf("failed to open %s: %w", root, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("failed to lock %s: %w", root, err)
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+
+	return fn()
+}
+
 // Load reads config.json from root, applying defaults. A missing file is not
 // an error: ccc must work with no configuration at all.
 func Load(root string) (*Config, error) {
@@ -367,18 +397,27 @@ func (c *Config) applyDefaults() error {
 func Create(root string, name string) (bool, error) {
 	path := filepath.Join(root, FileName)
 
-	if _, err := os.Stat(path); err == nil {
-		return false, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return false, fmt.Errorf("failed to stat %s: %w", path, err)
-	}
+	// The stat and the write are one step under the lock, so a SetDefaultClaudeVersion
+	// racing this cannot have its key clobbered by a write based on a stale "absent"
+	// stat: either this sees no file and writes, or it sees the file the pin wrote and
+	// leaves it be.
+	var created bool
+	err := withConfigLock(root, func() error {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("failed to stat %s: %w", path, err)
+		}
 
-	// Only default_profile is written. Derived values that Load() materializes
-	// (mount roots, gh_config) must not be frozen in as if the user chose them.
-	if err := writeJSON(path, &Config{DefaultProfile: name}); err != nil {
-		return false, err
-	}
-	return true, nil
+		// Only default_profile is written. Derived values that Load() materializes
+		// (mount roots, gh_config) must not be frozen in as if the user chose them.
+		if err := writeJSON(path, &Config{DefaultProfile: name}); err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
+	return created, err
 }
 
 // SetDefaultClaudeVersion records image.default_claude_version in config.json,
@@ -395,19 +434,24 @@ func SetDefaultClaudeVersion(root string, version string) error {
 	}
 	path := filepath.Join(root, FileName)
 
-	doc := map[string]any{}
-	if err := readJSON(path, &doc); err != nil {
-		return err
-	}
+	// Read and write are one step under the lock so a concurrent bootstrap (Create)
+	// or another pin cannot slot a write in between and lose a key: whatever is on
+	// disk when this reads is exactly what this merges into and rewrites.
+	return withConfigLock(root, func() error {
+		doc := map[string]any{}
+		if err := readJSON(path, &doc); err != nil {
+			return err
+		}
 
-	image, _ := doc["image"].(map[string]any)
-	if image == nil {
-		image = map[string]any{}
-	}
-	image["default_claude_version"] = version
-	doc["image"] = image
+		image, _ := doc["image"].(map[string]any)
+		if image == nil {
+			image = map[string]any{}
+		}
+		image["default_claude_version"] = version
+		doc["image"] = image
 
-	return writeJSON(path, doc)
+		return writeJSON(path, doc)
+	})
 }
 
 // LoadProfile reads profiles/<name>/profile.json. A missing file yields a
