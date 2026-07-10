@@ -46,8 +46,13 @@ func (r Resolution) String() string {
 // Resolve picks a profile: flag, then the nearest .ccc.json, then
 // default_profile. Never guesses — an unresolvable profile is an error listing
 // what is available, because a wrong-account run is worse than a failed one.
-func (s *Store) Resolve(flag string, cfg *config.Config, cwd string) (Resolution, error) {
-	res, err := s.resolveName(flag, cfg, cwd)
+//
+// dirFile is the already-loaded .ccc.json (nil when none), and origin its path.
+// Resolve does NOT read the file itself: the caller loads it exactly once so the
+// selected profile and the mounts assembled from the same file can never come
+// from two different reads of a file the container is free to rewrite between them.
+func (s *Store) Resolve(flag string, cfg *config.Config, dirFile *config.Dir, origin string) (Resolution, error) {
+	res, err := s.resolveName(flag, cfg, dirFile, origin)
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -66,19 +71,15 @@ func (s *Store) Resolve(flag string, cfg *config.Config, cwd string) (Resolution
 	return res, nil
 }
 
-func (s *Store) resolveName(flag string, cfg *config.Config, cwd string) (Resolution, error) {
+func (s *Store) resolveName(flag string, cfg *config.Config, dirFile *config.Dir, origin string) (Resolution, error) {
 	if flag != "" {
 		return Resolution{Name: flag, Source: SourceFlag}, nil
 	}
 
 	// A .ccc.json may carry only `dirs`, naming no profile. That is not a
 	// selection, so fall through to default_profile rather than erroring.
-	d, origin, ok, err := config.FindDir(cwd, s.home)
-	if err != nil {
-		return Resolution{}, err
-	}
-	if ok && d.Profile != "" {
-		return Resolution{Name: d.Profile, Source: SourceDirFile, Origin: origin}, nil
+	if dirFile != nil && dirFile.Profile != "" {
+		return Resolution{Name: dirFile.Profile, Source: SourceDirFile, Origin: origin}, nil
 	}
 
 	if cfg.DefaultProfile != "" {

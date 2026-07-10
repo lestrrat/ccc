@@ -40,8 +40,14 @@ func cmdCheck(a *app, args []string) error {
 	}
 	step("runtime", nil, rt.Name()+" ("+rt.Bin()+")")
 
-	// Resolve without bootstrapping: a diagnostic must not create a profile.
-	res, err := a.store.Resolve(a.globals.profile, a.cfg, a.cwd)
+	// Resolve without bootstrapping: a diagnostic must not create a profile. A
+	// malformed .ccc.json fails the profile step here, the same point resolution
+	// reported it when it still reread the file.
+	if a.dirFileErr != nil {
+		step("profile", a.dirFileErr, "")
+		return errFailed(failed)
+	}
+	res, err := a.store.Resolve(a.globals.profile, a.cfg, a.dirFile, a.dirFileOrigin)
 	if err != nil {
 		step("profile", err, "")
 		return errFailed(failed)
