@@ -15,20 +15,20 @@ func TestSSHAuthSock(t *testing.T) {
 	dir := t.TempDir()
 
 	t.Setenv("SSH_AUTH_SOCK", "")
-	require.Empty(t, sshAuthSock(), "unset -> empty")
+	require.Empty(t, resolveSSHAuthSock(), "unset -> empty")
 
 	t.Setenv("SSH_AUTH_SOCK", dir)
-	require.Empty(t, sshAuthSock(), "a directory (e.g. $HOME) is refused")
+	require.Empty(t, resolveSSHAuthSock(), "a directory (e.g. $HOME) is refused")
 
 	reg := filepath.Join(dir, "file")
 	require.NoError(t, os.WriteFile(reg, nil, 0o600))
 	t.Setenv("SSH_AUTH_SOCK", reg)
-	require.Empty(t, sshAuthSock(), "a regular file (e.g. a private key) is refused")
+	require.Empty(t, resolveSSHAuthSock(), "a regular file (e.g. a private key) is refused")
 
 	sockPath := filepath.Join(dir, "agent.sock")
 	l, err := net.Listen("unix", sockPath)
 	require.NoError(t, err)
 	defer func() { _ = l.Close() }()
 	t.Setenv("SSH_AUTH_SOCK", sockPath)
-	require.Equal(t, sockPath, sshAuthSock(), "a real socket is forwarded")
+	require.Equal(t, sockPath, resolveSSHAuthSock(), "a real socket is forwarded")
 }
