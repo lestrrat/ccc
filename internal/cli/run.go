@@ -35,7 +35,13 @@ func cmdClaude(a *app, args []string) error {
 // profiles there is no account to pick wrongly. Once a profile exists, an
 // unresolved run is still an error rather than a guess.
 func (a *app) resolveOrBootstrap() (profile.Resolution, error) {
-	res, err := a.store.Resolve(a.globals.profile, a.cfg, a.cwd)
+	// A malformed .ccc.json blocks a run just as it did when resolution reread
+	// the file: surface the deferred load error before choosing (or bootstrapping)
+	// a profile, so a broken file never silently falls through to default_profile.
+	if a.dirFileErr != nil {
+		return profile.Resolution{}, a.dirFileErr
+	}
+	res, err := a.store.Resolve(a.globals.profile, a.cfg, a.dirFile, a.dirFileOrigin)
 	if err == nil {
 		return res, nil
 	}

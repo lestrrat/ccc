@@ -1,8 +1,6 @@
 package profile_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/lestrrat-go/ccc/internal/config"
@@ -27,7 +25,7 @@ func TestResolve(t *testing.T) {
 		s, _ := newStore(t, "work", "personal")
 		cfg := &config.Config{DefaultProfile: "personal"}
 
-		got, err := s.Resolve("work", cfg, t.TempDir())
+		got, err := s.Resolve("work", cfg, &config.Dir{Profile: "personal"}, "/src/.ccc.json")
 		require.NoError(t, err)
 		require.Equal(t, "work", got.Name)
 		require.Equal(t, profile.SourceFlag, got.Source)
@@ -37,34 +35,32 @@ func TestResolve(t *testing.T) {
 		s, _ := newStore(t, "work", "personal")
 		cfg := &config.Config{DefaultProfile: "personal"}
 
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, config.DirConfigName), []byte(`{"profile": "work"}`), 0o600))
-
-		got, err := s.Resolve("", cfg, dir)
+		// The loaded .ccc.json is passed in, not reread by Resolve: the caller
+		// loads it once so profile choice and mounts agree on a single version.
+		got, err := s.Resolve("", cfg, &config.Dir{Profile: "work"}, "/src/.ccc.json")
 		require.NoError(t, err)
 		require.Equal(t, "work", got.Name)
 		require.Equal(t, profile.SourceDirFile, got.Source)
-		require.NotEmpty(t, got.Origin)
+		require.Equal(t, "/src/.ccc.json", got.Origin)
 	})
 
-	t.Run("dir config found in ancestor", func(t *testing.T) {
-		s, _ := newStore(t, "work")
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, config.DirConfigName), []byte(`{"profile": "work"}`), 0o600))
+	t.Run("dir file without a profile falls through", func(t *testing.T) {
+		s, _ := newStore(t, "personal")
+		cfg := &config.Config{DefaultProfile: "personal"}
 
-		deep := filepath.Join(dir, "a", "b", "c")
-		require.NoError(t, os.MkdirAll(deep, 0o755))
-
-		got, err := s.Resolve("", &config.Config{}, deep)
+		// A .ccc.json may carry only `dirs`; that names no profile, so resolution
+		// falls through to default_profile rather than erroring.
+		got, err := s.Resolve("", cfg, &config.Dir{Dirs: []string{"/srv"}}, "/src/.ccc.json")
 		require.NoError(t, err)
-		require.Equal(t, "work", got.Name)
+		require.Equal(t, "personal", got.Name)
+		require.Equal(t, profile.SourceDefault, got.Source)
 	})
 
 	t.Run("falls back to default_profile", func(t *testing.T) {
 		s, _ := newStore(t, "personal")
 		cfg := &config.Config{DefaultProfile: "personal"}
 
-		got, err := s.Resolve("", cfg, t.TempDir())
+		got, err := s.Resolve("", cfg, nil, "")
 		require.NoError(t, err)
 		require.Equal(t, "personal", got.Name)
 		require.Equal(t, profile.SourceDefault, got.Source)
@@ -73,7 +69,7 @@ func TestResolve(t *testing.T) {
 	t.Run("no profile selected is an error, never a guess", func(t *testing.T) {
 		s, _ := newStore(t, "work", "personal")
 
-		_, err := s.Resolve("", &config.Config{}, t.TempDir())
+		_, err := s.Resolve("", &config.Config{}, nil, "")
 		require.ErrorIs(t, err, profile.ErrNoSelection)
 		require.ErrorContains(t, err, "personal, work", "error must list what is available")
 	})
@@ -81,7 +77,7 @@ func TestResolve(t *testing.T) {
 	t.Run("unknown profile is an error", func(t *testing.T) {
 		s, _ := newStore(t, "work")
 
-		_, err := s.Resolve("nope", &config.Config{}, t.TempDir())
+		_, err := s.Resolve("nope", &config.Config{}, nil, "")
 		require.ErrorIs(t, err, profile.ErrNotExist)
 		// Only ErrNoSelection may bootstrap a first profile. A typo'd --profile
 		// must never silently create one.
@@ -91,7 +87,7 @@ func TestResolve(t *testing.T) {
 	t.Run("rejects names that escape the profiles dir", func(t *testing.T) {
 		s, _ := newStore(t, "work")
 
-		_, err := s.Resolve("../../etc", &config.Config{}, t.TempDir())
+		_, err := s.Resolve("../../etc", &config.Config{}, nil, "")
 		require.ErrorContains(t, err, "invalid profile name")
 	})
 }

@@ -53,7 +53,14 @@ type app struct {
 	id      container.Identity
 	cwd     string
 	// dirFile is the nearest .ccc.json, or nil. A per-checkout, per-user file.
+	// Loaded exactly once in newApp; both profile resolution and preflight/mount
+	// assembly consume this one object, so the selected profile and the mounts
+	// can never be read from two different versions of a file the container is
+	// free to rewrite between the reads.
 	dirFile *config.Dir
+	// dirFileOrigin is the path dirFile was read from, carried on the resolution
+	// so the stderr banner can name the .ccc.json that chose the profile.
+	dirFileOrigin string
 	// dirFileErr defers a malformed .ccc.json: only commands that actually
 	// mount (a run, `check`) care, so `ccc version` must not fail because a
 	// broken file sits in an ancestor directory.
@@ -219,17 +226,19 @@ func newApp(g globals) (*app, error) {
 
 	// A malformed .ccc.json is deferred, not fatal here: commands that never
 	// mount (version, help, profile, pin) must work regardless of what sits in
-	// an ancestor directory.
-	dirFile, _, _, dirFileErr := config.FindDir(cwd, id.Home)
+	// an ancestor directory. Read once — both profile resolution and preflight
+	// consume this single load rather than reopening the file.
+	dirFile, dirFileOrigin, _, dirFileErr := config.FindDir(cwd, id.Home)
 
 	return &app{
-		globals:    g,
-		cfg:        cfg,
-		store:      profile.NewStore(root, id.Home),
-		id:         id,
-		cwd:        cwd,
-		dirFile:    dirFile,
-		dirFileErr: dirFileErr,
+		globals:       g,
+		cfg:           cfg,
+		store:         profile.NewStore(root, id.Home),
+		id:            id,
+		cwd:           cwd,
+		dirFile:       dirFile,
+		dirFileOrigin: dirFileOrigin,
+		dirFileErr:    dirFileErr,
 	}, nil
 }
 

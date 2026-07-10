@@ -166,6 +166,38 @@ func TestPreflightMountsCanonicalCccJsonDir(t *testing.T) {
 	require.True(t, found, "the sibling dir must be mounted at its resolved path")
 }
 
+// The .ccc.json is loaded exactly once onto app.dirFile; both profile resolution
+// and the mount set must consume THAT one object. A single in-memory load makes a
+// wrong-profile + wrong-mounts combination impossible: there is no second read of
+// the container-writable file for the two consumers to disagree over.
+func TestDirFileDrivesBothResolutionAndMounts(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	store := profile.NewStore(root, home)
+	require.NoError(t, store.Create("work"))
+
+	repo := t.TempDir()
+	require.NoError(t, exec.Command("git", "-C", repo, "init", "-q").Run())
+	cwd, err := filepath.EvalSymlinks(repo)
+	require.NoError(t, err)
+
+	a := &app{
+		cfg:           &config.Config{DefaultProfile: "personal"},
+		store:         store,
+		id:            container.Identity{Home: home},
+		cwd:           cwd,
+		dirFile:       &config.Dir{Profile: "work", Dirs: []string{cwd}},
+		dirFileOrigin: filepath.Join(cwd, config.DirConfigName),
+	}
+
+	// Resolution reads the profile from the same object mounts reads its dirs from.
+	res, err := a.resolveOrBootstrap()
+	require.NoError(t, err)
+	require.Equal(t, "work", res.Name, "profile must come from app.dirFile, not default_profile")
+	require.Equal(t, profile.SourceDirFile, res.Source)
+
+	require.Contains(t, a.dirs(), cwd, "mounts must come from the same app.dirFile")
+}
+
 // mounts.home "rw" cannot fully protect the host ~/.local, so the user must be
 // told: the read-only guard only covers the ~/.local paths that already exist.
 func TestWarnHomeRW(t *testing.T) {
