@@ -254,7 +254,16 @@ func (s *Store) Seed(name string, from string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("%s is not a directory", from)
 	}
-	if err := copyTree(from, s.ClaudeDir(name)); err != nil {
+	// Resolve symlinks before walking: os.Stat above follows a symlinked ~/.claude
+	// (common with dotfile managers), but filepath.WalkDir does NOT descend the
+	// symlink root — so without this the copy silently produces an empty profile.
+	// Only the tree copy is resolved; the sidecar stays next to the ORIGINAL
+	// path (~/.claude.json sits beside the ~/.claude symlink, not its target).
+	src := from
+	if resolved, err := filepath.EvalSymlinks(from); err == nil {
+		src = resolved
+	}
+	if err := copyTree(src, s.ClaudeDir(name)); err != nil {
 		return err
 	}
 
