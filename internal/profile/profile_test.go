@@ -152,3 +152,28 @@ func TestValidateName(t *testing.T) {
 		require.NoError(t, profile.ValidateName(ok), "must accept %q", ok)
 	}
 }
+
+// A symlinked ~/.claude (dotfile managers do this) must still seed its contents:
+// os.Stat follows the link but WalkDir does not descend a symlink root.
+func TestSeedFollowsSymlinkedSource(t *testing.T) {
+	s, _ := newStore(t)
+
+	realDir := filepath.Join(t.TempDir(), "dotfiles-claude")
+	require.NoError(t, os.MkdirAll(realDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(realDir, "CLAUDE.md"), []byte("# hi"), 0o600))
+
+	link := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.Symlink(realDir, link))
+	// sidecar sits beside the symlink, not the target
+	require.NoError(t, os.WriteFile(link+".json", []byte(`{"projects":{}}`), 0o600))
+
+	require.NoError(t, s.Seed("work", link))
+
+	b, err := os.ReadFile(filepath.Join(s.ClaudeDir("work"), "CLAUDE.md"))
+	require.NoError(t, err)
+	require.Equal(t, "# hi", string(b), "symlinked source contents must be copied, not silently skipped")
+
+	b, err = os.ReadFile(s.ClaudeJSON("work"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"projects":{}}`, string(b), "sidecar beside the symlink must still copy")
+}
