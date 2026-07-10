@@ -128,6 +128,31 @@ func TestCheckMountDir(t *testing.T) {
 	})
 }
 
+// mounts.cache bind-mounts the profile's cache/ read-write at $HOME/.cache. A
+// pre-existing cache/ -> /outside symlink must be refused rather than followed:
+// os.MkdirAll on a symlink-to-dir succeeds, so without the guard the outside
+// target would be mounted read-write into the container, escaping the profile.
+func TestMountsRefusesSymlinkedCacheDir(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	store := profile.NewStore(root, home)
+	require.NoError(t, store.Create("p"))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, store.CacheDir("p")))
+
+	a := &app{
+		id:    container.Identity{Home: home},
+		cfg:   &config.Config{Mounts: config.Mounts{Cache: true}},
+		store: store,
+	}
+	_, err := a.mounts("p")
+	require.Error(t, err, "a symlinked cache dir must be refused, not mounted through")
+
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	require.Empty(t, entries, "must not create anything through the symlinked cache dir")
+}
+
 // mounts() must bind the SAME canonical path the guard checked, not the original
 // symlink — otherwise a preflight-checked link could still resolve elsewhere.
 func TestPreflightMountsCanonicalCccJsonDir(t *testing.T) {

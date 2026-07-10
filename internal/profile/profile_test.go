@@ -159,6 +159,52 @@ func TestValidateMountSources(t *testing.T) {
 		require.NoError(t, os.Link(outside, s.ClaudeJSON("work")))
 		require.Error(t, s.ValidateMountSources("work"), "check must reject a hard-linked claude.json like a run does")
 	})
+
+	t.Run("rejects a symlinked cache dir", func(t *testing.T) {
+		s, _ := newStore(t)
+		require.NoError(t, s.Materialize("work"))
+		// cache/ is the third mount source, bind-mounted read-write at $HOME/.cache.
+		// A cache/ -> /outside symlink would otherwise be followed and its target
+		// mounted into the container, escaping the profile boundary.
+		require.NoError(t, os.Symlink(t.TempDir(), s.CacheDir("work")))
+		require.Error(t, s.ValidateMountSources("work"), "check must reject a symlinked cache dir like a run does")
+	})
+}
+
+// MaterializeCache is the run path's cache mount source creator. Like
+// Materialize for claude/, it must refuse a pre-existing cache/ -> /outside
+// symlink rather than follow it: os.MkdirAll on a symlink-to-dir succeeds, so
+// without the guard the outside target would be bind-mounted read-write into
+// the container. Nothing may be created inside the symlink's target.
+func TestMaterializeCacheRejectsSymlinkedCache(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, s.CacheDir("work")))
+
+	_, err := s.MaterializeCache("work")
+	require.Error(t, err, "a symlinked cache dir must be rejected, not followed")
+
+	entries, err := os.ReadDir(outside)
+	require.NoError(t, err)
+	require.Empty(t, entries, "must not create anything through the symlinked cache dir")
+}
+
+// The happy path: MaterializeCache creates a real cache/ directory under the
+// profile and returns its path, so a clean profile mounts a profile-owned cache.
+func TestMaterializeCacheCreatesRealDir(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, s.Materialize("work"))
+
+	dir, err := s.MaterializeCache("work")
+	require.NoError(t, err)
+	require.Equal(t, s.CacheDir("work"), dir)
+
+	fi, err := os.Lstat(dir)
+	require.NoError(t, err)
+	require.True(t, fi.IsDir())
+	require.Zero(t, fi.Mode()&os.ModeSymlink, "cache dir must be a real directory, not a symlink")
 }
 
 // A pre-existing claude.json that is a HARD LINK to an outside file is a regular

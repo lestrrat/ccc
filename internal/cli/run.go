@@ -308,9 +308,12 @@ func (a *app) mounts(name string) ([]container.Mount, error) {
 	}
 
 	if a.cfg.Mounts.Cache {
-		src := a.store.CacheDir(name)
-		if err := os.MkdirAll(src, 0o700); err != nil {
-			return nil, fmt.Errorf("failed to create profile cache: %w", err)
+		// MaterializeCache validates then creates the cache dir under the same
+		// symlink guard as claude/, so a pre-existing cache/ -> /outside symlink is
+		// refused rather than followed and mounted read-write into the container.
+		src, err := a.store.MaterializeCache(name)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, container.Mount{Source: src, Target: filepath.Join(a.id.Home, ".cache")})
 	}

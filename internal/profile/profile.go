@@ -246,6 +246,31 @@ func (s *Store) Materialize(name string) error {
 	return nil
 }
 
+// MaterializeCache ensures the profile's cache/ mount source exists as a real
+// directory under the store and returns its path. It mirrors Materialize's
+// guard-then-create for claude/: cache/ is bind-mounted read-write at
+// $HOME/.cache, so it is a mount source subject to the same profile-boundary
+// invariant. Validating BEFORE os.MkdirAll refuses a pre-existing cache/ ->
+// /outside symlink rather than following it and mounting the outside target.
+func (s *Store) MaterializeCache(name string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	// The store root is the trusted root for the symlink guard below; it must
+	// exist as a real directory before ValidateMountSources can walk down from it.
+	if err := os.MkdirAll(s.root, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create profile store: %w", err)
+	}
+	if err := s.ValidateMountSources(name); err != nil {
+		return "", err
+	}
+	dir := s.CacheDir(name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create profile cache: %w", err)
+	}
+	return dir, nil
+}
+
 // ValidateMountSources rejects a profile whose bind-mount sources would escape
 // the profile boundary, WITHOUT creating anything — so `ccc check` can apply the
 // exact invariant a real run enforces (Materialize calls this before any mkdir)
@@ -278,6 +303,16 @@ func (s *Store) ValidateMountSources(name string) error {
 	// defeating the profile boundary. Reuse the seed copy path's guard to refuse a
 	// symlinked component; a not-yet-created path stops the walk (nothing to reject).
 	if err := ensureNoSymlinkPath(s.root, s.ClaudeDir(name)); err != nil {
+		return err
+	}
+
+	// The cache/ directory is the profile's THIRD mount source: it is bind-mounted
+	// READ-WRITE at $HOME/.cache when mounts.cache is enabled. Like claude/, a
+	// pre-existing cache/ -> /outside symlink would be followed by os.MkdirAll and
+	// mount the outside target read-write into the container, escaping the profile
+	// boundary. Guard it with the same walk so check and run agree; a not-yet-
+	// created cache/ stops the walk (nothing to reject).
+	if err := ensureNoSymlinkPath(s.root, s.CacheDir(name)); err != nil {
 		return err
 	}
 
