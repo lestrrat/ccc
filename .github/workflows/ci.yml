@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Tier 1: lint gates everything below via `needs`, so a lint failure
+  # short-circuits before any tests run.
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+
+      - name: go vet
+        run: go vet ./...
+
+  # Tier 2: build and test, only after lint succeeds. ccc is a Linux container
+  # tool; macOS is here for cross-platform build/behavior coverage. The race
+  # detector runs on Linux only (it multiplies runtime for no extra coverage of
+  # OS-agnostic data races).
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            race: "-race"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Cache Go modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ${{ matrix.race }} -coverprofile=coverage.out ./...
+
+      - name: Coverage report
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          {
+            echo "## Coverage"
+            echo
+            go tool cover -func=coverage.out | tail -1
+          } >> "$GITHUB_STEP_SUMMARY"
