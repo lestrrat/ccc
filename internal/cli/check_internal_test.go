@@ -180,12 +180,18 @@ func TestDirFileDrivesBothResolutionAndMounts(t *testing.T) {
 	cwd, err := filepath.EvalSymlinks(repo)
 	require.NoError(t, err)
 
+	// A dir that ONLY app.dirFile can supply: it is not the repo root, so
+	// workspace.Dirs(cwd) never contributes it. If dirs() stopped consuming
+	// app.dirFile, this exact path would vanish from the mount set.
+	extra, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
 	a := &app{
 		cfg:           &config.Config{DefaultProfile: "personal"},
 		store:         store,
 		id:            container.Identity{Home: home},
 		cwd:           cwd,
-		dirFile:       &config.Dir{Profile: "work", Dirs: []string{cwd}},
+		dirFile:       &config.Dir{Profile: "work", Dirs: []string{extra}},
 		dirFileOrigin: filepath.Join(cwd, config.DirConfigName),
 	}
 
@@ -195,7 +201,7 @@ func TestDirFileDrivesBothResolutionAndMounts(t *testing.T) {
 	require.Equal(t, "work", res.Name, "profile must come from app.dirFile, not default_profile")
 	require.Equal(t, profile.SourceDirFile, res.Source)
 
-	require.Contains(t, a.dirs(), cwd, "mounts must come from the same app.dirFile")
+	require.Contains(t, a.dirs(), extra, "mounts must come from the same app.dirFile")
 }
 
 // mounts.home "rw" cannot fully protect the host ~/.local, so the user must be
