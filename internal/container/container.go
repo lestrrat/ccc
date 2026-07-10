@@ -68,8 +68,11 @@ type Runtime interface {
 	RunArgs(Spec, Identity) []string
 	// BuildArgs builds the full argv (including Bin) for an image build.
 	BuildArgs(tag string, contextDir string, buildArgs map[string]string, noCache bool) []string
-	// InspectArgs builds the full argv (including Bin) to test image presence.
-	InspectArgs(tag string) []string
+	// InspectLabelArgs builds the full argv (including Bin) to read a named image
+	// label. ccc verifies an image's baked-in content hash rather than trusting
+	// its tag, so a missing image (the inspect exits non-zero) and a mismatched
+	// label are both treated as absent.
+	InspectLabelArgs(tag, label string) []string
 }
 
 // Detect resolves the runtime named by pref, or auto-detects one.
@@ -168,4 +171,11 @@ func buildArgsFor(bin string, tag string, contextDir string, buildArgs map[strin
 		args = append(args, "--build-arg", k+"="+buildArgs[k])
 	}
 	return append(args, contextDir)
+}
+
+// inspectLabelArgs reads one label off an image with a Go-template format. Both
+// runtimes accept the identical `image inspect --format` invocation, and both
+// exit non-zero when the image is absent.
+func inspectLabelArgs(bin, tag, label string) []string {
+	return []string{bin, "image", "inspect", "--format", fmt.Sprintf("{{ index .Config.Labels %q }}", label), tag}
 }

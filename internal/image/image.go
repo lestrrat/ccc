@@ -15,13 +15,38 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/lestrrat-go/ccc/internal/config"
 	"github.com/lestrrat-go/ccc/internal/container"
 )
 
+// contentHashLabel is the immutable label baked into the image at build time,
+// carrying the full content hash of the Dockerfile and build args. Exists
+// verifies it: the tag alone is untrusted because any local image can be tagged
+// ccc:<hash>, and running an imposter would hand it the user's profile, repo,
+// SSH agent, and host network.
+const contentHashLabel = "ccc.content-hash"
+
+// contentHashArg names the build arg carrying the full hash into the build so
+// the Dockerfile can stamp it into contentHashLabel. It is passed at build time
+// only and is deliberately NOT part of the hashed build args (that would be
+// circular), so it never influences the hash it records.
+const contentHashArg = "CCC_CONTENT_HASH"
+
 //go:embed Dockerfile
 var baseDockerfile []byte
+
+// contentHashFooter is appended after the base Dockerfile AND any user
+// Dockerfile.extra, so it is always the final instruction in the composed
+// image. Stamping the label last guarantees a user's Dockerfile.extra cannot
+// override ccc.content-hash (which would make Exists reject a genuine build
+// forever), and keeps CCC_CONTENT_HASH out of ARG scope for the extra's build
+// steps. CCC_CONTENT_HASH is passed at build time only and is deliberately NOT
+// part of the hashed build args, so it never influences the hash it carries.
+const contentHashFooter = "\n# --- ccc content-hash verification (always last) ---\n" +
+	"ARG " + contentHashArg + "=\n" +
+	"LABEL " + contentHashLabel + "=${" + contentHashArg + "}\n"
 
 // ClaudeBin is where npm installs Claude Code in the image.
 //
@@ -73,22 +98,25 @@ func NewBuilder(rt container.Runtime, cfg *config.Config, id container.Identity,
 	return &Builder{rt: rt, cfg: cfg, id: id, version: version}
 }
 
-// dockerfile returns the effective Dockerfile: the embedded base with the
-// user's Dockerfile.extra appended verbatim.
+// dockerfile returns the effective Dockerfile: the embedded base, then the
+// user's Dockerfile.extra (if any) appended verbatim, then ccc's content-hash
+// verification footer as the final instruction. The footer is last so a user's
+// Dockerfile.extra can neither override ccc.content-hash nor see
+// CCC_CONTENT_HASH in its ARG scope.
 func (b *Builder) dockerfile() ([]byte, error) {
-	out := make([]byte, 0, len(baseDockerfile)+256)
+	out := make([]byte, 0, len(baseDockerfile)+len(contentHashFooter)+256)
 	out = append(out, baseDockerfile...)
 
-	if b.cfg.Image.ExtraDockerfile == "" {
-		return out, nil
-	}
-	extra, err := os.ReadFile(b.cfg.Image.ExtraDockerfile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read %s: %w", b.cfg.Image.ExtraDockerfile, err)
+	if b.cfg.Image.ExtraDockerfile != "" {
+		extra, err := os.ReadFile(b.cfg.Image.ExtraDockerfile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", b.cfg.Image.ExtraDockerfile, err)
+		}
+		out = append(out, "\n# --- Dockerfile.extra ---\n"...)
+		out = append(out, extra...)
 	}
 
-	out = append(out, "\n# --- Dockerfile.extra ---\n"...)
-	out = append(out, extra...)
+	out = append(out, contentHashFooter...)
 	return out, nil
 }
 
@@ -117,10 +145,14 @@ func (b *Builder) claudeVersion() string {
 	return config.LatestClaudeVersion
 }
 
-// Tag is the content-addressed image tag. It covers the Dockerfile and the
-// build args, so changing either — including switching hosts — rebuilds rather
-// than silently reusing an image with the wrong UID baked in.
-func (b *Builder) Tag() (string, error) {
+// contentHash is the full hex SHA-256 over the Dockerfile and the build args.
+// The Tag embeds it and the build stamps it into contentHashLabel, so an
+// existing image can be verified against it rather than trusted by tag.
+//
+// The full digest — not a prefix — is used: a truncated tag is only a naming
+// convenience, but a short hash is cheap to collide, and Exists relies on this
+// value being collision-resistant to reject a pre-tagged imposter image.
+func (b *Builder) contentHash() (string, error) {
 	df, err := b.dockerfile()
 	if err != nil {
 		return "", err
@@ -139,16 +171,37 @@ func (b *Builder) Tag() (string, error) {
 		_, _ = fmt.Fprintf(h, "\x00%s=%s", k, args[k])
 	}
 
-	return "ccc:" + hex.EncodeToString(h.Sum(nil))[:12], nil
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Exists reports whether the tagged image is already present.
+// Tag is the content-addressed image tag. It covers the Dockerfile and the
+// build args, so changing either — including switching hosts — rebuilds rather
+// than silently reusing an image with the wrong UID baked in.
+func (b *Builder) Tag() (string, error) {
+	hash, err := b.contentHash()
+	if err != nil {
+		return "", err
+	}
+	return "ccc:" + hash, nil
+}
+
+// Exists reports whether an image for tag is present AND was built by ccc from
+// exactly these inputs. The tag is not trusted on its own: any local image can
+// be tagged ccc:<hash>, so ccc reads the immutable content-hash label baked in
+// at build time and accepts the image only when it matches the expected hash.
+// A missing image, a missing label, or a mismatch is treated as absent so ccc
+// rebuilds rather than running an attacker-supplied image.
 func (b *Builder) Exists(tag string) bool {
-	args := b.rt.InspectArgs(tag)
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run() == nil
+	want, err := b.contentHash()
+	if err != nil {
+		return false
+	}
+	args := b.rt.InspectLabelArgs(tag, contentHashLabel)
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == want
 }
 
 // Ensure returns the image tag, building the image first if it is missing.
@@ -185,7 +238,14 @@ func (b *Builder) Build(tag string, noCache bool) error {
 
 	fmt.Fprintf(os.Stderr, "ccc: building image %s (first run takes a few minutes)\n", tag)
 
-	args := b.rt.BuildArgs(tag, dir, b.buildArgs(), noCache)
+	// Stamp the full content hash into the image as a label so Exists can verify
+	// this image is genuinely ccc's. It is added here rather than in buildArgs so
+	// it never feeds back into the hash it records. tag is "ccc:<hash>", so the
+	// hash is recovered from it without re-reading the Dockerfile.
+	buildArgs := b.buildArgs()
+	buildArgs[contentHashArg] = strings.TrimPrefix(tag, "ccc:")
+
+	args := b.rt.BuildArgs(tag, dir, buildArgs, noCache)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stderr // keep stdout clean for the contained process
 	cmd.Stderr = os.Stderr

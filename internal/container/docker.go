@@ -24,6 +24,6 @@ func (d *docker) BuildArgs(tag string, contextDir string, buildArgs map[string]s
 	return buildArgsFor(d.bin, tag, contextDir, buildArgs, noCache)
 }
 
-func (d *docker) InspectArgs(tag string) []string {
-	return []string{d.bin, "image", "inspect", tag}
+func (d *docker) InspectLabelArgs(tag, label string) []string {
+	return inspectLabelArgs(d.bin, tag, label)
 }

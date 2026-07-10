@@ -77,3 +77,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} && npm cache clea
 
 USER ${USERNAME}
 ENV HOME=${HOME}
+
+# NOTE: ccc appends the content-hash verification footer (ARG CCC_CONTENT_HASH +
+# LABEL ccc.content-hash) after this base AND after any user Dockerfile.extra, so
+# it is always the final instruction. See internal/image/image.go dockerfile().
