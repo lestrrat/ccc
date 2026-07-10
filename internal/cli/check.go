@@ -81,6 +81,15 @@ func cmdCheck(a *app, args []string) error {
 		}
 		fmt.Printf("      %-14s %s -> %s (%s)\n", "", m.Source, m.Target, mode)
 	}
+	// mounts() never creates the cache dir (check must not), so a fresh profile
+	// legitimately has no cache/ yet and no cache mount above. Report it as pending
+	// rather than silently omit it: the first real run materializes it and mounts
+	// it. Stay truthful without failing a valid fresh profile.
+	if a.cfg.Mounts.Cache {
+		if _, statErr := os.Stat(a.store.CacheDir(res.Name)); statErr != nil {
+			fmt.Printf("      %-14s %s\n", "cache", a.store.CacheDir(res.Name)+" (will be created on first run)")
+		}
+	}
 
 	b, err := a.builder(rt, res.Name)
 	if err != nil {
