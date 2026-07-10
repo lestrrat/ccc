@@ -12,8 +12,9 @@ import (
 )
 
 // cmdPin pins a Claude Code version and rebuilds. Because CLAUDE_VERSION is
-// declared as the last ARG in the Dockerfile, only the final layer is
-// invalidated: this costs one npm install, not a full image rebuild.
+// declared immediately before the npm install layer (only the trailing
+// content-hash label ARG follows it), a bump invalidates just that layer: this
+// costs one npm install, not a full image rebuild.
 //
 // Without --profile it writes the global default (image.default_claude_version
 // in config.json). With --profile it writes that profile's pin (the
