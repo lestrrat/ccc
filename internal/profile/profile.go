@@ -228,6 +228,15 @@ func (s *Store) Materialize(name string) error {
 		if !fi.Mode().IsRegular() {
 			return fmt.Errorf("%s must be a regular file, not %s", path, fi.Mode().Type())
 		}
+		// A hard link is a regular file, so the check above accepts it — but its
+		// inode is shared with whatever else links to it, and bind-mounting the
+		// file read-write at $HOME/.claude.json would let the container mutate
+		// that outside path through the shared inode, bypassing copyFile's
+		// temp+rename hard-link defense. Require a private single-link inode, the
+		// same "must be a private regular file" invariant copyFile enforces.
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+			return fmt.Errorf("%s must be a private regular file, not a hard link (link count %d)", path, st.Nlink)
+		}
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("failed to stat %s: %w", path, err)
@@ -461,16 +470,20 @@ func copyFile(src string, dst string, dstRoot string) error {
 	return nil
 }
 
-// createTempFile makes a fresh, exclusively-created temp file beside dst, inside
-// its already guard-verified parent (never /tmp, so the later os.Rename is an
-// atomic same-filesystem swap). O_CREATE|O_EXCL|O_NOFOLLOW guarantees a
+// createTempFile makes a fresh, exclusively-created temp file in dst's already
+// guard-verified parent directory (never /tmp, so the later os.Rename is an
+// atomic same-filesystem swap). Its basename is a short fixed prefix plus the
+// pid and a counter — NOT dst's filename with a suffix, which for a near-
+// NAME_MAX source name would overflow and fail the create with ENAMETOOLONG,
+// breaking legitimately long filenames. O_CREATE|O_EXCL|O_NOFOLLOW guarantees a
 // brand-new inode: it fails rather than opening any pre-existing symlink, hard
 // link, or file at the candidate name, so nothing outside the profile is
 // touched. The final chmod pins the exact source permission bits, which the
 // umask on create may otherwise have masked off.
 func createTempFile(dst string, perm fs.FileMode) (*os.File, error) {
+	dir := filepath.Dir(dst)
 	for n := 0; ; n++ {
-		name := fmt.Sprintf("%s.ccc-tmp-%d-%d", dst, os.Getpid(), n)
+		name := filepath.Join(dir, fmt.Sprintf(".ccc-tmp-%d-%d", os.Getpid(), n))
 		out, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, perm)
 		if err != nil {
 			if errors.Is(err, fs.ErrExist) {

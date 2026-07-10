@@ -3,6 +3,7 @@ package profile_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lestrrat-go/ccc/internal/profile"
@@ -61,6 +62,55 @@ func TestMaterializeRejectsSymlinkedClaudeJSON(t *testing.T) {
 	b, err := os.ReadFile(outside)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"secret":1}`, string(b), "symlink target must not be written through")
+}
+
+// A pre-existing claude.json that is a HARD LINK to an outside file is a regular
+// file, so Materialize's IsRegular check accepts it — but bind-mounting that
+// shared inode read-write at $HOME/.claude.json would let the container mutate
+// the outside file through it. Materialize must reject a link count > 1, and
+// Seed (which funnels through Materialize) must fail rather than accept it.
+func TestMaterializeRejectsHardlinkedClaudeJSON(t *testing.T) {
+	s, _ := newStore(t)
+	require.NoError(t, os.MkdirAll(s.ClaudeDir("work"), 0o700))
+
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{"secret":1}`), 0o600))
+	// A hard link, not a symlink: the profile's claude.json shares the inode.
+	require.NoError(t, os.Link(outside, s.ClaudeJSON("work")))
+
+	require.Error(t, s.Materialize("work"), "a hard-linked claude.json must be rejected")
+
+	// Seed's no-sidecar path funnels through Materialize, so it must fail too.
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.Error(t, s.Seed("work", src), "seeding onto a hard-linked claude.json must fail")
+
+	// The outside inode must be untouched: neither truncated nor written through.
+	b, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"secret":1}`, string(b), "hard-link target must not be written through")
+}
+
+// Seeding a source file whose basename is near NAME_MAX must succeed. The temp
+// file used for the copy has a SHORT fixed-prefix basename in dst's parent, not
+// dst's long name plus a suffix — which would overflow NAME_MAX and fail the
+// create with ENAMETOOLONG, breaking legitimately long filenames.
+func TestSeedCopiesNearNameMaxFile(t *testing.T) {
+	s, _ := newStore(t)
+
+	// 250 bytes: a valid basename (<= NAME_MAX 255) that overflows once any
+	// non-trivial suffix is appended, as the old temp-naming scheme did.
+	long := strings.Repeat("a", 250)
+
+	src := filepath.Join(t.TempDir(), ".claude")
+	require.NoError(t, os.MkdirAll(src, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(src, long), []byte("payload"), 0o600))
+
+	require.NoError(t, s.Seed("work", src), "a near-NAME_MAX filename must seed, not overflow the temp name")
+
+	b, err := os.ReadFile(filepath.Join(s.ClaudeDir("work"), long))
+	require.NoError(t, err)
+	require.Equal(t, "payload", string(b))
 }
 
 func TestCreateRejectsDuplicate(t *testing.T) {
