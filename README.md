@@ -1,6 +1,6 @@
 # ccc — Claude Code Contained
 
-Run Claude Code in a container so that `~/.claude` can be swapped per account, without touching the host's real configuration.
+Run Claude Code in a container so that multiple Claude Code accounts can be used seamlessly from one host user account, without touching the host's real configuration.
 
 ```sh
 ccc                                         # first run: creates a "default" profile, then logs you in
