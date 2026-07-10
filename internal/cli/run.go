@@ -412,12 +412,20 @@ func (a *app) ghConfig(name string) (string, error) {
 // exposure the narrow default exists to prevent, arrived at by accident.
 // Naming such a directory in mounts.dirs is fine; falling into it is not.
 func (a *app) checkMountDir(dir string) error {
+	// Compare against the CANONICAL home: callers pass a symlink-resolved dir,
+	// but a.id.Home (from user.Current) may itself be a symlink spelling. Without
+	// resolving both sides, a dir that resolves to the real home path slips past
+	// the equality/ancestor checks on a symlink-home system.
+	home := a.id.Home
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
 	switch {
 	case dir == "/":
 		return fmt.Errorf("refusing to mount /")
-	case dir == a.id.Home:
+	case dir == home:
 		return fmt.Errorf("refusing to mount your home directory %s", dir)
-	case underRoot(a.id.Home, dir):
+	case underRoot(home, dir):
 		return fmt.Errorf("refusing to mount %s: it contains your home directory", dir)
 	default:
 		return nil

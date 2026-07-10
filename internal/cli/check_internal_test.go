@@ -79,6 +79,23 @@ func TestPreflightRefusesUntrustedCccJsonDirs(t *testing.T) {
 	require.NoError(t, a.checkMountDir(cwd))
 }
 
+// When $HOME itself is a symlink spelling (id.Home from user.Current), a dir
+// that resolves to the real home path must still be refused: checkMountDir
+// canonicalizes both sides.
+func TestCheckMountDirCanonicalizesHome(t *testing.T) {
+	base := t.TempDir()
+	realHome := filepath.Join(base, "realhome")
+	require.NoError(t, os.MkdirAll(realHome, 0o755))
+	realHome, err := filepath.EvalSymlinks(realHome)
+	require.NoError(t, err)
+	homeLink := filepath.Join(base, "homelink")
+	require.NoError(t, os.Symlink(realHome, homeLink))
+
+	a := &app{id: container.Identity{Home: homeLink}} // id.Home is the symlink spelling
+	require.Error(t, a.checkMountDir(realHome), "a dir resolving to the real home must be refused")
+	require.NoError(t, a.checkMountDir(filepath.Join(realHome, "sub", "proj")))
+}
+
 // Outside a git repository the implicit workspace dir is the cwd. `ccc` run
 // from $HOME would otherwise mount the whole home read-write — the exposure the
 // narrow default exists to prevent, reached by accident rather than by config.
