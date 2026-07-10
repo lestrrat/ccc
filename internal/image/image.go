@@ -145,19 +145,30 @@ func (b *Builder) claudeVersion() string {
 	return config.LatestClaudeVersion
 }
 
-// contentHash is the full hex SHA-256 over the Dockerfile and the build args.
-// The Tag embeds it and the build stamps it into contentHashLabel, so an
-// existing image can be verified against it rather than trusted by tag.
-//
-// The full digest — not a prefix — is used: a truncated tag is only a naming
-// convenience, but a short hash is cheap to collide, and Exists relies on this
-// value being collision-resistant to reject a pre-tagged imposter image.
+// contentHash composes the Dockerfile and hashes that snapshot together with
+// the build args. It is a convenience over contentHashFor for callers that only
+// need the hash; Ensure composes once and calls contentHashFor directly so the
+// tag and the built image derive from the same bytes.
 func (b *Builder) contentHash() (string, error) {
 	df, err := b.dockerfile()
 	if err != nil {
 		return "", err
 	}
+	return b.contentHashFor(df), nil
+}
 
+// contentHashFor is the full hex SHA-256 over the given composed Dockerfile
+// bytes and the build args. The Tag embeds it and the build stamps it into
+// contentHashLabel, so an existing image can be verified against it rather than
+// trusted by tag. It takes the composed bytes as an argument so a caller can
+// hash exactly the snapshot it will build into the context — the tag and the
+// built image must correspond, or different content could be cached under a
+// benign content-hash tag.
+//
+// The full digest — not a prefix — is used: a truncated tag is only a naming
+// convenience, but a short hash is cheap to collide, and Exists relies on this
+// value being collision-resistant to reject a pre-tagged imposter image.
+func (b *Builder) contentHashFor(df []byte) string {
 	h := sha256.New()
 	h.Write(df)
 
@@ -171,7 +182,7 @@ func (b *Builder) contentHash() (string, error) {
 		_, _ = fmt.Fprintf(h, "\x00%s=%s", k, args[k])
 	}
 
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Tag is the content-addressed image tag. It covers the Dockerfile and the
@@ -196,6 +207,14 @@ func (b *Builder) Exists(tag string) bool {
 	if err != nil {
 		return false
 	}
+	return b.existsWith(tag, want)
+}
+
+// existsWith reports whether tag's image carries a ccc.content-hash label equal
+// to want. Ensure passes the hash of the single Dockerfile snapshot it is about
+// to build, avoiding a second read of Dockerfile.extra between tagging and the
+// existence check.
+func (b *Builder) existsWith(tag, want string) bool {
 	args := b.rt.InspectLabelArgs(tag, contentHashLabel)
 	out, err := exec.Command(args[0], args[1:]...).Output()
 	if err != nil {
@@ -205,27 +224,41 @@ func (b *Builder) Exists(tag string) bool {
 }
 
 // Ensure returns the image tag, building the image first if it is missing.
+//
+// The Dockerfile is composed exactly once here and that single snapshot is used
+// for the tag, the existence check, and the build context. Reading
+// Dockerfile.extra again for the build could otherwise build different content
+// than the tag names and cache it under that benign content-hash tag.
 func (b *Builder) Ensure() (string, error) {
-	tag, err := b.Tag()
+	df, err := b.dockerfile()
 	if err != nil {
 		return "", err
 	}
-	if b.Exists(tag) {
+	hash := b.contentHashFor(df)
+	tag := "ccc:" + hash
+	if b.existsWith(tag, hash) {
 		return tag, nil
 	}
-	if err := b.Build(tag, false); err != nil {
+	if err := b.buildWith(tag, df, false); err != nil {
 		return "", err
 	}
 	return tag, nil
 }
 
-// Build builds the image, streaming runtime output to the user's terminal.
+// Build composes the Dockerfile and builds the image. Ensure calls buildWith
+// directly with the snapshot it already hashed so the tag and the built image
+// always correspond.
 func (b *Builder) Build(tag string, noCache bool) error {
 	df, err := b.dockerfile()
 	if err != nil {
 		return err
 	}
+	return b.buildWith(tag, df, noCache)
+}
 
+// buildWith builds the image from the given composed Dockerfile bytes,
+// streaming runtime output to the user's terminal.
+func (b *Builder) buildWith(tag string, df []byte, noCache bool) error {
 	dir, err := os.MkdirTemp("", "ccc-build-*")
 	if err != nil {
 		return fmt.Errorf("failed to create build context: %w", err)

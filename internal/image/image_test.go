@@ -33,6 +33,27 @@ func (f *fakeRuntime) InspectLabelArgs(_, _ string) []string {
 	return []string{"printf", "%s", f.label}
 }
 
+// captureRuntime records the tag and the exact Dockerfile bytes handed to a
+// build, so a test can assert the built context corresponds to the tag. Its
+// BuildArgs returns a no-op argv that exits 0, so buildWith's exec succeeds
+// without a real container runtime.
+type captureRuntime struct {
+	tag        string
+	dockerfile []byte
+}
+
+func (c *captureRuntime) Name() string                                        { return "capture" }
+func (c *captureRuntime) Bin() string                                         { return "capture" }
+func (c *captureRuntime) RunArgs(container.Spec, container.Identity) []string { return nil }
+func (c *captureRuntime) BuildArgs(tag, contextDir string, _ map[string]string, _ bool) []string {
+	c.tag = tag
+	c.dockerfile, _ = os.ReadFile(filepath.Join(contextDir, "Dockerfile"))
+	return []string{"true"} // a no-op build that exits 0
+}
+func (c *captureRuntime) InspectLabelArgs(_, _ string) []string {
+	return []string{"false"} // image absent, so Ensure proceeds to build
+}
+
 func testBuilder(t *testing.T, rt container.Runtime) *image.Builder {
 	t.Helper()
 	id := container.Identity{UID: 1000, GID: 1000, User: "u", Home: "/home/u"}
@@ -120,6 +141,28 @@ func TestExistsRejectsAbsentImage(t *testing.T) {
 	tag, err := b.Tag()
 	require.NoError(t, err)
 	require.False(t, b.Exists(tag))
+}
+
+func TestEnsureBuildsTheSnapshotItTagged(t *testing.T) {
+	dir := t.TempDir()
+	extra := filepath.Join(dir, "Dockerfile.extra")
+	require.NoError(t, os.WriteFile(extra, []byte("RUN echo one\n"), 0o600))
+
+	rt := &captureRuntime{}
+	id := container.Identity{UID: 1000, GID: 1000, User: "u", Home: "/home/u"}
+	b := image.NewBuilder(rt, &config.Config{Image: config.Image{ExtraDockerfile: extra}}, id, "")
+
+	tag, err := b.Ensure()
+	require.NoError(t, err)
+
+	// The image is built from exactly the bytes the tag names: hashing the
+	// Dockerfile written into the build context must reproduce the tag it was
+	// built under. A second read of Dockerfile.extra between tagging and the
+	// build could otherwise cache different content under this benign tag.
+	require.Equal(t, tag, rt.tag)
+	require.NotEmpty(t, rt.dockerfile, "the build context Dockerfile must be captured")
+	require.Equal(t, "ccc:"+b.ContentHashFor(rt.dockerfile), rt.tag,
+		"the built Dockerfile must hash to the tag it was built under")
 }
 
 func TestEnsureShim(t *testing.T) {
