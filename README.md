@@ -401,7 +401,7 @@ ccc -p work pin              # pin just the "work" profile
 
 A pin is `latest` or a release semver like `2.1.205`. **Prereleases (`-beta`, `-rc.1`) are refused**: ccc orders versions on the `X.Y.Z` triple alone, so a pinned prerelease would compare equal to its release and never advance to it — a stuck profile. Claude Code ships stable through npm's `latest`, so this only ever rejects a hand-typed prerelease.
 
-The version is an explicit pin. `CLAUDE_VERSION` is declared immediately before the only `RUN` that uses it (the `npm install`), so bumping it invalidates just that layer and the trailing `ccc.content-hash` label — apt, the Go toolchain, and `golangci-lint` above it are reused. (`CCC_CONTENT_HASH` is the final `ARG`, but it feeds only that verification label, not a build step.) And because the image tag content-hashes the build args, a changed pin is a changed tag — the next plain `ccc` rebuilds on its own.
+The version is an explicit pin. `CLAUDE_VERSION` is declared immediately before the only `RUN` that uses it (the `npm install`), so — with no `Dockerfile.extra` — bumping it invalidates just that layer and the trailing `ccc.content-hash` label; apt, the Go toolchain, and `golangci-lint` above it are reused. (`CCC_CONTENT_HASH` is the final `ARG`, but it feeds only that verification label, not a build step.) And because the image tag content-hashes the build args, a changed pin is a changed tag — the next plain `ccc` rebuilds on its own.
 
 (A `Dockerfile.extra` is appended *below* that layer, so it sees the finished base. The trade is that an extra with its own `RUN` also rebuilds on a version bump — the base stays composable, at the cost of the one-layer property when you extend it.)
 
