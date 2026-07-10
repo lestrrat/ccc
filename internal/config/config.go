@@ -391,27 +391,37 @@ func (c *Config) applyDefaults() error {
 	return nil
 }
 
-// Create writes a config.json naming name as default_profile. It reports
-// whether it wrote one: an existing config is never modified, so ccc cannot
-// clobber or reorder settings a user hand-wrote.
+// Create ensures config.json names name as default_profile. It reports whether
+// it added the key: an existing default_profile is never overwritten, so ccc
+// cannot clobber a value a user hand-wrote.
+//
+// When config.json already exists but lacks default_profile — the file a global
+// `ccc pin` (SetDefaultClaudeVersion) creates before any bootstrap — the key is
+// MERGED into the existing document rather than skipped, so bootstrap and pin
+// both survive regardless of which ran first. The file is merged as a raw map,
+// not round-tripped through Config, so a key ccc does not model (a newer option,
+// image.default_claude_version) is preserved verbatim; a struct round-trip would
+// silently drop it and freeze in the derived values Load() materializes.
 func Create(root string, name string) (bool, error) {
 	path := filepath.Join(root, FileName)
 
-	// The stat and the write are one step under the lock, so a SetDefaultClaudeVersion
-	// racing this cannot have its key clobbered by a write based on a stale "absent"
-	// stat: either this sees no file and writes, or it sees the file the pin wrote and
-	// leaves it be.
+	// The read and the write are one step under the lock, so a SetDefaultClaudeVersion
+	// racing this cannot lose a key to a write built on a stale read: this always merges
+	// into whatever is on disk when it reads.
 	var created bool
 	err := withConfigLock(root, func() error {
-		if _, err := os.Stat(path); err == nil {
-			return nil
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("failed to stat %s: %w", path, err)
+		doc := map[string]any{}
+		if err := readJSON(path, &doc); err != nil {
+			return err
 		}
 
-		// Only default_profile is written. Derived values that Load() materializes
-		// (mount roots, gh_config) must not be frozen in as if the user chose them.
-		if err := writeJSON(path, &Config{DefaultProfile: name}); err != nil {
+		// An explicit default_profile is the user's choice; leave the file untouched.
+		if _, ok := doc["default_profile"]; ok {
+			return nil
+		}
+
+		doc["default_profile"] = name
+		if err := writeJSON(path, doc); err != nil {
 			return err
 		}
 		created = true
