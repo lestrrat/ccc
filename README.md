@@ -59,7 +59,7 @@ One profile = one account = one host directory = one container `$HOME` overlay.
 ```
 ~/.config/ccc/
   config.json              # global config
-  Dockerfile.extra         # optional, appended to the base image
+  Dockerfile.extra         # optional; appended when image.extra_dockerfile points to it
   profiles/
     work/
       claude/              # mounted at $HOME/.claude
@@ -328,7 +328,7 @@ Built locally, cached under a content-addressed tag covering the Dockerfile and 
 
 Contents: Node, `@anthropic-ai/claude-code`, `git`, `gh`, `ripgrep`, `jq`, the Go toolchain, and `golangci-lint`.
 
-To add tooling without forking ccc, drop a `~/.config/ccc/Dockerfile.extra`; it is appended verbatim to the base image.
+To add tooling without forking ccc, create a `~/.config/ccc/Dockerfile.extra` and point `image.extra_dockerfile` at it in `config.json` (as the example above does); it is then appended verbatim to the base image. Creating the file alone has no effect — the path is only read when `image.extra_dockerfile` names it.
 
 ### Which Claude Code runs
 
