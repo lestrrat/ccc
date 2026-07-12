@@ -167,9 +167,18 @@ func parse(argv []string) (invocation, error) {
 			if len(before) < 2 {
 				return inv, fmt.Errorf("%s needs a runtime name", arg)
 			}
+			// An explicit empty value is a hard error, not a silent fall back to
+			// auto-detect: `--runtime "$UNSET"` must fail, mirroring --profile.
+			if before[1] == "" {
+				return inv, fmt.Errorf("%s: empty runtime name", arg)
+			}
 			inv.globals.runtime, before = before[1], before[2:]
 		case strings.HasPrefix(arg, "--runtime="):
-			inv.globals.runtime, before = strings.TrimPrefix(arg, "--runtime="), before[1:]
+			name := strings.TrimPrefix(arg, "--runtime=")
+			if name == "" {
+				return inv, fmt.Errorf("--runtime: empty runtime name")
+			}
+			inv.globals.runtime, before = name, before[1:]
 		default:
 			return inv, unknownFlag(arg)
 		}
