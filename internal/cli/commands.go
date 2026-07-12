@@ -51,7 +51,7 @@ func cmdPin(a *app, args []string) error {
 			return err
 		}
 		if !a.store.Exists(scope) {
-			return fmt.Errorf("%q: %w", scope, profile.ErrNotExist)
+			return fmt.Errorf("%q: %w\n%s", scope, profile.ErrNotExist, a.store.Available())
 		}
 	}
 
@@ -286,7 +286,7 @@ func profileRemove(a *app, args []string) error {
 	// typo of an existing name would otherwise wipe it silently.
 	if !force {
 		if !a.store.Exists(name) {
-			return fmt.Errorf("%q: %w", name, profile.ErrNotExist)
+			return fmt.Errorf("%q: %w\n%s", name, profile.ErrNotExist, a.store.Available())
 		}
 		ok, err := confirm(fmt.Sprintf("delete profile %q and its credentials?", name))
 		if err != nil {
