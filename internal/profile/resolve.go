@@ -66,7 +66,7 @@ func (s *Store) Resolve(flag string, cfg *config.Config, dirFile *config.Dir, or
 	}
 	if !s.Exists(res.Name) {
 		return Resolution{}, fmt.Errorf("profile %q (from %s) %w\n%s",
-			res.Name, res.Source, ErrNotExist, s.available())
+			res.Name, res.Source, ErrNotExist, s.Available())
 	}
 	return res, nil
 }
@@ -87,7 +87,7 @@ func (s *Store) resolveName(flag string, cfg *config.Config, dirFile *config.Dir
 	}
 
 	return Resolution{}, fmt.Errorf("%w: pass --profile, add a %s, or set default_profile\n%s\nrun `ccc --help` for usage",
-		ErrNoSelection, config.DirConfigName, s.available())
+		ErrNoSelection, config.DirConfigName, s.Available())
 }
 
 // IsEmpty reports whether no profiles exist yet. With zero profiles there is no
@@ -100,7 +100,10 @@ func (s *Store) IsEmpty() (bool, error) {
 	return len(names) == 0, nil
 }
 
-func (s *Store) available() string {
+// Available returns a human-readable line listing the existing profiles, or a
+// hint to create one when there are none. Used to enrich "profile not found"
+// errors so the caller sees the valid names.
+func (s *Store) Available() string {
 	names, err := s.List()
 	if err != nil || len(names) == 0 {
 		return "no profiles yet: create one with `ccc profile create <name>`"
