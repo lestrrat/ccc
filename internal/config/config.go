@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,12 +190,20 @@ func DefaultRoot() (string, error) {
 }
 
 // readJSON decodes path into v. A missing file leaves v untouched.
+//
+// Unknown keys are rejected: these files (config.json, .ccc.json, profile.json)
+// are hand-edited, so a misspelled key like "mount" for "mounts" would otherwise
+// be silently ignored and the setting would never take effect. The raw-map merge
+// in Create/SetDefaultClaudeVersion does not go through here, so keys ccc does
+// not model are still preserved on write — only reads for use are strict.
 func readJSON(path string, v any) error {
 	b, err := ReadStateFile(path)
 	if err != nil || b == nil {
 		return err
 	}
-	if err := json.Unmarshal(b, v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 	return nil
