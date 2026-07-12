@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,13 +190,30 @@ func DefaultRoot() (string, error) {
 }
 
 // readJSON decodes path into v. A missing file leaves v untouched.
+//
+// Unknown keys are rejected: these files (config.json, .ccc.json, profile.json)
+// are hand-edited, so a misspelled key like "mount" for "mounts" would otherwise
+// be silently ignored and the setting would never take effect. The raw-map merge
+// in Create/SetDefaultClaudeVersion also calls readJSON, but decodes into a
+// map[string]any, on which DisallowUnknownFields has no effect — so keys ccc does
+// not model are still preserved on write; only decoding into a struct is strict.
 func readJSON(path string, v any) error {
 	b, err := ReadStateFile(path)
 	if err != nil || b == nil {
 		return err
 	}
-	if err := json.Unmarshal(b, v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("failed to parse %s: %w", path, err)
+	}
+	// Reject trailing data after the first JSON value. A json.Decoder stops at the
+	// end of the first value, so without this check a second top-level object or
+	// trailing junk would be silently dropped — the same silent-accept this
+	// strictness exists to close. Token returning io.EOF means clean end of input
+	// (trailing whitespace is skipped); anything else is unexpected trailing data.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("failed to parse %s: unexpected trailing data after top-level value", path)
 	}
 	return nil
 }
