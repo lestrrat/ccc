@@ -275,6 +275,13 @@ func profileRemove(a *app, args []string) error {
 		return fmt.Errorf("usage: ccc profile rm <name> [--force]")
 	}
 
+	// Removing the configured default_profile leaves a bare `ccc` pointing at a
+	// profile that no longer exists. Warn before doing it (even with --force) so
+	// the break is not a surprise on the next run.
+	if name == a.cfg.DefaultProfile {
+		fmt.Fprintf(os.Stderr, "ccc: WARNING: %q is the default_profile in %s/config.json;\nccc: after removal a bare `ccc` fails until you set a new default_profile or pass -p.\n", name, a.cfg.Root)
+	}
+
 	// rm deletes credentials and all of the profile's state, irreversibly. A
 	// typo of an existing name would otherwise wipe it silently.
 	if !force {
